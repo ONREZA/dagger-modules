@@ -1,11 +1,7 @@
-import { dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
+import { type Directory, dag, func, object, type Secret } from "@dagger.io/dagger";
 
 /**
  * Generic Docker image build and registry push module.
- *
- * Builds Docker images from a Dockerfile and publishes them to any
- * container registry. Supports build arguments, organization namespacing,
- * and dockerconfigjson-based authentication.
  */
 @object()
 export class ImageBuilder {
@@ -13,7 +9,7 @@ export class ImageBuilder {
   registry: string;
 
   constructor(
-    /** Docker registry URL (e.g., "ghcr.io", "docker.io", "registry.example.com") */
+    /** Docker registry URL */
     registry: string = "",
   ) {
     this.registry = registry;
@@ -21,19 +17,6 @@ export class ImageBuilder {
 
   /**
    * Build a Docker image and push to registry.
-   *
-   * Builds using the specified Dockerfile, tags the image as
-   * `{registry}/{organization}/{name}:{tag}`, and pushes it. Returns the
-   * full image reference including the digest.
-   *
-   * @param source - Source directory containing the Dockerfile
-   * @param name - Image name (e.g., "my-service")
-   * @param dockerfile - Path to Dockerfile relative to source root
-   * @param tag - Image tag
-   * @param registryAuth - Docker registry auth (dockerconfigjson format)
-   * @param organization - Registry organization/namespace (e.g., "my-org")
-   * @param buildArgs - Comma-separated build args (e.g., "KEY1=VAL1,KEY2=VAL2")
-   * @returns Full image reference with digest
    */
   @func()
   async buildAndPublish(
@@ -59,29 +42,7 @@ export class ImageBuilder {
       }
     }
 
-    const { username, password } = await this.getRegistryCredentials(registryAuth);
-
-    const buildOpts: { dockerfile: string; buildArgs?: { name: string; value: string }[] } = { dockerfile };
-    if (parsedArgs.length > 0) {
-      buildOpts.buildArgs = parsedArgs;
-    }
-
-    const ref = await source
-      .dockerBuild(buildOpts)
-      .withRegistryAuth(this.registry, username, password)
-      .publish(imageRef);
-
-    return ref;
-  }
-
-  private cachedUsername = "";
-  private cachedPassword: Secret | null = null;
-
-  private async getRegistryCredentials(registryAuth: Secret): Promise<{ username: string; password: Secret }> {
-    if (this.cachedUsername && this.cachedPassword) {
-      return { username: this.cachedUsername, password: this.cachedPassword };
-    }
-
+    // Extract registry credentials from dockerconfigjson
     const ctr = dag
       .container()
       .from("alpine:3.21")
@@ -100,9 +61,18 @@ export class ImageBuilder {
         .stdout()
     ).trim();
 
-    this.cachedUsername = username;
-    this.cachedPassword = dag.setSecret(`${this.registry}-password`, passwordPlaintext);
+    const password = dag.setSecret(`${this.registry}-password`, passwordPlaintext);
 
-    return { username: this.cachedUsername, password: this.cachedPassword };
+    const buildOpts: { dockerfile: string; buildArgs?: { name: string; value: string }[] } = { dockerfile };
+    if (parsedArgs.length > 0) {
+      buildOpts.buildArgs = parsedArgs;
+    }
+
+    const ref = await source
+      .dockerBuild(buildOpts)
+      .withRegistryAuth(this.registry, username, password)
+      .publish(imageRef);
+
+    return ref;
   }
 }
