@@ -71,11 +71,12 @@ export class ImageBuilder {
     return ref;
   }
 
-  private cachedCredentials: { username: string; password: Secret } | null = null;
+  private cachedUsername = "";
+  private cachedPassword: Secret | null = null;
 
   private async getRegistryCredentials(registryAuth: Secret): Promise<{ username: string; password: Secret }> {
-    if (this.cachedCredentials) {
-      return this.cachedCredentials;
+    if (this.cachedUsername && this.cachedPassword) {
+      return { username: this.cachedUsername, password: this.cachedPassword };
     }
 
     const ctr = dag
@@ -96,11 +97,9 @@ export class ImageBuilder {
         .stdout()
     ).trim();
 
-    this.cachedCredentials = {
-      username,
-      password: dag.setSecret(`${this.registry}-password`, passwordPlaintext),
-    };
+    this.cachedUsername = username;
+    this.cachedPassword = dag.setSecret(`${this.registry}-password`, passwordPlaintext);
 
-    return this.cachedCredentials;
+    return { username: this.cachedUsername, password: this.cachedPassword };
   }
 }
