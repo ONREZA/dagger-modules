@@ -97,7 +97,7 @@ export class CargoBuilder {
       const sshCmd =
         sshPort === 22
           ? "ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new"
-          : `ssh -p ${sshPortStr} -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new`;
+          : `ssh -p ${sshPortStr} -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -o HostKeyAlgorithms=+ssh-rsa`;
 
       ctr = ctr
         .withMountedSecret("/root/.ssh/id_rsa", sshKey, { mode: 0o400 })
