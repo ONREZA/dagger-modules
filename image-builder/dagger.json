@@ -1,0 +1,8 @@
+{
+  "name": "image-builder",
+  "engineVersion": "v0.20.0",
+  "sdk": {
+    "source": "typescript"
+  },
+  "source": "dagger"
+}
