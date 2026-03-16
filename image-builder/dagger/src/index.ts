@@ -45,15 +45,16 @@ export class ImageBuilder {
     organization: string = "",
     buildArgs: string = "",
   ): Promise<string> {
-    const orgPrefix = organization ? `${organization}/` : "";
+    const org = organization || "";
+    const orgPrefix = org ? `${org}/` : "";
     const imageRef = `${this.registry}/${orgPrefix}${name}:${tag}`;
 
-    const args: Record<string, string> = {};
+    const parsedArgs: { name: string; value: string }[] = [];
     if (buildArgs) {
       for (const pair of buildArgs.split(",")) {
         const eqIdx = pair.indexOf("=");
         if (eqIdx > 0) {
-          args[pair.slice(0, eqIdx)] = pair.slice(eqIdx + 1);
+          parsedArgs.push({ name: pair.slice(0, eqIdx), value: pair.slice(eqIdx + 1) });
         }
       }
     }
@@ -63,7 +64,7 @@ export class ImageBuilder {
     const ref = await source
       .dockerBuild({
         dockerfile,
-        buildArgs: Object.entries(args).map(([n, value]) => ({ name: n, value })),
+        buildArgs: parsedArgs,
       })
       .withRegistryAuth(this.registry, username, password)
       .publish(imageRef);
