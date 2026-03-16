@@ -61,11 +61,13 @@ export class ImageBuilder {
 
     const { username, password } = await this.getRegistryCredentials(registryAuth);
 
+    const buildOpts: { dockerfile: string; buildArgs?: { name: string; value: string }[] } = { dockerfile };
+    if (parsedArgs.length > 0) {
+      buildOpts.buildArgs = parsedArgs;
+    }
+
     const ref = await source
-      .dockerBuild({
-        dockerfile,
-        buildArgs: parsedArgs,
-      })
+      .dockerBuild(buildOpts)
       .withRegistryAuth(this.registry, username, password)
       .publish(imageRef);
 
