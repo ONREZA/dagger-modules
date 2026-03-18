@@ -168,7 +168,7 @@ export class ChangeDetector {
    * @param repo - Repository path (e.g., "my-org/release-production")
    * @param registryAuth - Docker registry auth (dockerconfigjson format)
    */
-  @func()
+  @func({ cache: "never" })
   async generateCalver(
     registry: string,
     repo: string,

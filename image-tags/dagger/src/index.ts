@@ -36,14 +36,13 @@ export class ImageTags {
    * @param s3AccessKey - S3 access key
    * @param s3SecretKey - S3 secret key
    */
-  @func()
+  @func({ cache: "never" })
   async read(environment: string, s3AccessKey: Secret, s3SecretKey: Secret): Promise<string> {
     const s3Path = `s3/${this.s3Bucket}/image-tags/${environment}.json`;
 
     const raw = await dag
       .container()
       .from(MC_IMAGE)
-      .withEnvVariable("CACHE_BUSTER", new Date().toISOString())
       .withSecretVariable("S3_ACCESS_KEY", s3AccessKey)
       .withSecretVariable("S3_SECRET_KEY", s3SecretKey)
       .withExec(["sh", "-c", `mc alias set s3 "${this.s3Endpoint}" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"`])
@@ -64,7 +63,7 @@ export class ImageTags {
    * @param s3AccessKey - S3 access key
    * @param s3SecretKey - S3 secret key
    */
-  @func()
+  @func({ cache: "never" })
   async write(
     environment: string,
     tagsJson: string,
