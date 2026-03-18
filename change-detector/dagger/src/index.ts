@@ -176,14 +176,9 @@ export class ChangeDetector {
   ): Promise<string> {
     const craneCtr = dag
       .container()
-      .from("alpine:3.21")
-      .withExec([
-        "sh",
-        "-c",
-        'apk add --no-cache curl >/dev/null 2>&1 && curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.21.2/go-containerregistry_Linux_x86_64.tar.gz" | tar -xzf - -C /usr/local/bin crane',
-      ])
+      .from("cgr.dev/chainguard/crane:latest-dev")
       .withMountedSecret("/run/secrets/dockerconfig", registryAuth)
-      .withExec(["sh", "-c", "mkdir -p /root/.docker && cp /run/secrets/dockerconfig /root/.docker/config.json"]);
+      .withExec(["sh", "-c", "mkdir -p ~/.docker && cp /run/secrets/dockerconfig ~/.docker/config.json"]);
 
     const now = new Date();
     const year = now.getUTCFullYear();
