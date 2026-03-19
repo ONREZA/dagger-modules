@@ -177,8 +177,8 @@ export class ChangeDetector {
     const craneCtr = dag
       .container()
       .from("cgr.dev/chainguard/crane:latest-dev")
-      .withMountedSecret("/run/secrets/dockerconfig", registryAuth)
-      .withExec(["sh", "-c", "mkdir -p ~/.docker && cp /run/secrets/dockerconfig ~/.docker/config.json"]);
+      .withMountedSecret("/run/secrets/dockerconfig", registryAuth, { mode: 0o444 })
+      .withExec(["sh", "-c", "mkdir -p ~/.docker && cat /run/secrets/dockerconfig > ~/.docker/config.json"]);
 
     const now = new Date();
     const year = now.getUTCFullYear();
