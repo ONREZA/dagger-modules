@@ -46,6 +46,20 @@ export class ChangeDetector {
     const services = JSON.parse(servicesJson) as ServiceDef[];
     const groups = JSON.parse(groupsJson) as GroupDef[];
 
+    // Validate dependencies early — catch config errors even with forceAll
+    const groupNames = new Set(groups.map((g) => g.name));
+    const seenServices = new Set<string>();
+    for (const svc of services) {
+      for (const dep of svc.dependsOn ?? []) {
+        if (!groupNames.has(dep) && !seenServices.has(dep)) {
+          throw new Error(
+            `Service "${svc.name}" depends on "${dep}" which is neither a group nor a service defined earlier in the list.`,
+          );
+        }
+      }
+      seenServices.add(svc.name);
+    }
+
     const gitCtr = dag
       .container()
       .from("alpine:3.21")
@@ -176,7 +190,7 @@ export class ChangeDetector {
   ): Promise<string> {
     const craneCtr = dag
       .container()
-      .from("cgr.dev/chainguard/crane:latest-dev")
+      .from("cgr.dev/chainguard/crane:latest-dev@sha256:e0b9051884102836e487ab9a707c510d5fb8d6688b4c9d05441b4d136f2a31ee")
       .withMountedSecret("/run/secrets/dockerconfig", registryAuth, { mode: 0o444 })
       .withExec(["sh", "-c", "mkdir -p ~/.docker && cat /run/secrets/dockerconfig > ~/.docker/config.json"]);
 
@@ -214,11 +228,30 @@ export class ChangeDetector {
   }
 }
 
-/** Convert a simple glob pattern to a RegExp. */
+/**
+ * Convert a simple glob pattern to a RegExp.
+ *
+ * Supported patterns:
+ *   - `path/to/dir/**`  — matches everything inside the directory
+ *   - `path/to/file.ext` — exact file match
+ *
+ * Throws on unsupported glob syntax (*, ?, [...]) to prevent silent mismatches.
+ */
 function globToRegex(pattern: string): RegExp {
   if (pattern.endsWith("/**")) {
-    const prefix = pattern.slice(0, -3).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`^${prefix}/.+`);
+    const prefix = pattern.slice(0, -3);
+    if (prefix.includes("*") || prefix.includes("?") || prefix.includes("[")) {
+      throw new Error(
+        `Unsupported glob pattern: "${pattern}". Only "path/**" (directory) and exact paths are supported.`,
+      );
+    }
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`^${escaped}/.+`);
+  }
+  if (pattern.includes("*") || pattern.includes("?") || pattern.includes("[")) {
+    throw new Error(
+      `Unsupported glob pattern: "${pattern}". Only "path/**" (directory) and exact paths are supported.`,
+    );
   }
   const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^${escaped}$`);
