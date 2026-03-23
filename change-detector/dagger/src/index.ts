@@ -201,6 +201,7 @@ export class ChangeDetector {
     const versionPattern = /^v\d{4}\.\d{4}\.\d{3}$/;
 
     const existingRaw = await craneCtr
+      .withEnvVariable("_CACHE_BUST", String(Date.now()))
       .withExec(["sh", "-c", `crane ls "${registry}/${repo}" 2>/dev/null || echo ""`])
       .stdout();
 
