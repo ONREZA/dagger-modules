@@ -201,7 +201,6 @@ export class ChangeDetector {
     const versionPattern = /^v\d{4}\.\d{4}\.\d{3}$/;
 
     const existingRaw = await craneCtr
-      .withEnvVariable("_CACHE_BUST", String(Date.now()))
       .withExec(["sh", "-c", `crane ls "${registry}/${repo}" 2>/dev/null || echo ""`])
       .stdout();
 
@@ -214,7 +213,6 @@ export class ChangeDetector {
       const version = `${datePrefix}.${String(baseSeq + attempt).padStart(3, "0")}`;
       const checkResult = (
         await craneCtr
-          .withEnvVariable("_CACHE_BUST", `${Date.now()}-${attempt}`)
           .withExec([
             "sh",
             "-c",
