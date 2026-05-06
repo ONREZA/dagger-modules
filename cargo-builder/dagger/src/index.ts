@@ -1,6 +1,37 @@
-import { dag, type Directory, func, object, type Secret, type Service } from "@dagger.io/dagger";
+import { type Container, dag, type Directory, func, object, type Secret, type Service } from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
+
+function isAlpineImage(image: string): boolean {
+  return image.includes("alpine");
+}
+
+function withPackageManagerCache(ctr: Container, buildImage: string, cacheId: string): Container {
+  if (isAlpineImage(buildImage)) {
+    return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`));
+  }
+
+  return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`));
+}
+
+function installSystemPackages(ctr: Container, buildImage: string, packages: string[]): Container {
+  if (packages.length === 0) return ctr;
+
+  if (isAlpineImage(buildImage)) {
+    return ctr.withExec(["apk", "add", "--cache-dir", "/var/cache/apk", "--update-cache", ...packages]);
+  }
+
+  return ctr.withExec([
+    SHELL,
+    "-c",
+    [
+      "rm -f /etc/apt/apt.conf.d/docker-clean",
+      "apt-get update",
+      `apt-get install -y --no-install-recommends ${packages.join(" ")}`,
+      "rm -rf /var/lib/apt/lists/*",
+    ].join(" && "),
+  ]);
+}
 
 /**
  * Generic Cargo (Rust) build module.
@@ -49,11 +80,16 @@ export class CargoBuilder {
     dbService?: Service,
     dbHostname: string = "db",
   ): Promise<Directory> {
+    const packageSet = new Set(extraPackages.split(/\s+/).filter(Boolean));
+    if (sshKey) {
+      packageSet.add("git");
+      packageSet.add("git-lfs");
+      packageSet.add("openssh-client");
+    }
+
     let ctr = dag
       .container()
       .from(buildImage)
-      .withMountedDirectory("/src", source)
-      .withWorkdir("/src")
       // Persistent cargo cache volumes
       .withMountedCache("/cargo-cache/registry", dag.cacheVolume(`cargo-registry-${cacheId}`))
       .withMountedCache("/cargo-cache/git", dag.cacheVolume(`cargo-git-${cacheId}`))
@@ -61,38 +97,17 @@ export class CargoBuilder {
       .withEnvVariable("CARGO_HOME", "/cargo-cache")
       .withEnvVariable("CARGO_TARGET_DIR", "/cargo-cache/target");
 
+    ctr = withPackageManagerCache(ctr, buildImage, cacheId);
+
     // Bind database service for sqlx compile-time verification
     if (dbService) {
       ctr = ctr.withServiceBinding(dbHostname, dbService);
     }
 
-    // Install system packages (auto-detect Alpine vs Debian by image name)
-    if (extraPackages) {
-      const pkgs = extraPackages.split(/\s+/).filter(Boolean);
-      const isAlpine = buildImage.includes("alpine");
-      if (isAlpine) {
-        ctr = ctr.withExec(["apk", "add", "--no-cache", ...pkgs]);
-      } else {
-        ctr = ctr.withExec([
-          SHELL,
-          "-c",
-          `apt-get update && apt-get install -y --no-install-recommends ${pkgs.join(" ")} && rm -rf /var/lib/apt/lists/*`,
-        ]);
-      }
-    }
+    ctr = installSystemPackages(ctr, buildImage, [...packageSet]);
 
     // Setup SSH for private git dependencies
     if (sshKey) {
-      const isAlpine = buildImage.includes("alpine");
-      if (isAlpine) {
-        ctr = ctr.withExec(["apk", "add", "--no-cache", "git", "git-lfs", "openssh-client"]);
-      } else {
-        ctr = ctr.withExec([
-          SHELL,
-          "-c",
-          "apt-get update && apt-get install -y --no-install-recommends git git-lfs openssh-client && rm -rf /var/lib/apt/lists/*",
-        ]);
-      }
       ctr = ctr.withExec(["git", "lfs", "install"]);
 
       const sshPortStr = String(sshPort);
@@ -116,6 +131,8 @@ export class CargoBuilder {
           `mkdir -p /cargo-cache && printf '[net]\\ngit-fetch-with-cli = true\\n' > /cargo-cache/config.toml`,
         ]);
     }
+
+    ctr = ctr.withMountedDirectory("/src", source).withWorkdir("/src");
 
     // Set build environment variables
     if (buildEnv) {

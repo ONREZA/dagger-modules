@@ -1,6 +1,35 @@
-import { dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
+import { type Container, dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
+
+function isAlpineImage(image: string): boolean {
+  return image.includes("alpine");
+}
+
+function withPackageManagerCache(ctr: Container, image: string, cacheId: string): Container {
+  if (isAlpineImage(image)) {
+    return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`));
+  }
+
+  return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`));
+}
+
+function installCaCertificates(ctr: Container, image: string): Container {
+  if (isAlpineImage(image)) {
+    return ctr.withExec(["apk", "add", "--cache-dir", "/var/cache/apk", "--update-cache", "ca-certificates"]);
+  }
+
+  return ctr.withExec([
+    SHELL,
+    "-c",
+    [
+      "rm -f /etc/apt/apt.conf.d/docker-clean",
+      "apt-get update -qq",
+      "apt-get install -y -qq --no-install-recommends ca-certificates",
+      "rm -rf /var/lib/apt/lists/*",
+    ].join(" && "),
+  ]);
+}
 
 /**
  * Generic Bun build module.
@@ -58,7 +87,11 @@ export class BunBuilder {
 
     let ctr = dag
       .container()
-      .from(bunImage)
+      .from(bunImage);
+
+    ctr = installCaCertificates(withPackageManagerCache(ctr, bunImage, "bun-ca-certificates"), bunImage);
+
+    ctr = ctr
       .withMountedDirectory("/app", source)
       .withWorkdir("/app")
       .withMountedCache("/root/.bun/install/cache", dag.cacheVolume("bun-install-cache"))
@@ -81,9 +114,6 @@ export class BunBuilder {
     if (sentryToken) {
       ctr = ctr.withSecretVariable("SENTRY_AUTH_TOKEN", sentryToken);
     }
-
-    // Install CA certs for HTTPS requests during build (e.g., Sentry sourcemap upload)
-    ctr = ctr.withExec([SHELL, "-c", "apt-get update -qq && apt-get install -y -qq ca-certificates > /dev/null 2>&1"]);
 
     ctr = ctr.withExec(["bun", "run", `build:${pkg}`]);
 

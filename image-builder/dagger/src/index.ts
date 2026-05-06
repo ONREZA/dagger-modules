@@ -48,7 +48,8 @@ export class ImageBuilder {
     const ctr = dag
       .container()
       .from("alpine:3.21")
-      .withExec(["apk", "add", "--no-cache", "jq"])
+      .withMountedCache("/var/cache/apk", dag.cacheVolume("image-builder-apk-cache"))
+      .withExec(["apk", "add", "--cache-dir", "/var/cache/apk", "--update-cache", "jq"])
       .withMountedSecret("/tmp/config.json", registryAuth);
 
     const username = (
