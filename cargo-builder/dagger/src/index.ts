@@ -1,5 +1,7 @@
 import { dag, type Directory, func, object, type Secret, type Service } from "@dagger.io/dagger";
 
+const SHELL = "/bin/sh";
+
 /**
  * Generic Cargo (Rust) build module.
  *
@@ -72,7 +74,7 @@ export class CargoBuilder {
         ctr = ctr.withExec(["apk", "add", "--no-cache", ...pkgs]);
       } else {
         ctr = ctr.withExec([
-          "sh",
+          SHELL,
           "-c",
           `apt-get update && apt-get install -y --no-install-recommends ${pkgs.join(" ")} && rm -rf /var/lib/apt/lists/*`,
         ]);
@@ -86,7 +88,7 @@ export class CargoBuilder {
         ctr = ctr.withExec(["apk", "add", "--no-cache", "git", "git-lfs", "openssh-client"]);
       } else {
         ctr = ctr.withExec([
-          "sh",
+          SHELL,
           "-c",
           "apt-get update && apt-get install -y --no-install-recommends git git-lfs openssh-client && rm -rf /var/lib/apt/lists/*",
         ]);
@@ -102,14 +104,14 @@ export class CargoBuilder {
       ctr = ctr
         .withMountedSecret("/root/.ssh/id_rsa", sshKey, { mode: 0o400 })
         .withExec([
-          "sh",
+          SHELL,
           "-c",
           `ssh-keyscan -p ${sshPortStr} ${sshHost} >> /root/.ssh/known_hosts 2>/dev/null || true`,
         ])
         .withEnvVariable("GIT_SSH_COMMAND", sshCmd)
         // Tell cargo to use system git (which has SSH access)
         .withExec([
-          "sh",
+          SHELL,
           "-c",
           `mkdir -p /cargo-cache && printf '[net]\\ngit-fetch-with-cli = true\\n' > /cargo-cache/config.toml`,
         ]);
@@ -131,7 +133,7 @@ export class CargoBuilder {
     if (workspaceManifest) {
       ctr = ctr
         .withExec([
-          "sh",
+          SHELL,
           "-c",
           [
             "mkdir -p /tmp/cargo-build-workspace",
@@ -148,15 +150,17 @@ export class CargoBuilder {
     const targetList = targets.split(",").map((t) => t.trim());
     const cargoFlags = targetList.map((t) => (binFlags ? `--bin ${t}` : `-p ${t}`)).join(" ");
 
-    ctr = ctr.withExec(["sh", "-c", `cargo build --release ${cargoFlags}`]);
+    ctr = ctr.withExec([SHELL, "-c", `cargo build --release ${cargoFlags}`]);
 
     // Copy binaries to output directory
     const outputDir = `/src/.production/binaries/${cacheId}`;
-    const copyCommands = targetList.map(
-      (t) =>
-        `mkdir -p ${outputDir} && cp /cargo-cache/target/release/${t} ${outputDir}/${t} && chmod +x ${outputDir}/${t}`,
-    );
-    ctr = ctr.withExec(["sh", "-c", copyCommands.join(" && ")]);
+    ctr = ctr.withExec(["mkdir", "-p", outputDir]);
+    for (const target of targetList) {
+      const targetPath = `${outputDir}/${target}`;
+      ctr = ctr
+        .withExec(["cp", `/cargo-cache/target/release/${target}`, targetPath])
+        .withExec(["chmod", "+x", targetPath]);
+    }
 
     return ctr.directory("/src");
   }

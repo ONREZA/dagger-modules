@@ -1,5 +1,6 @@
 import { dag, func, object, type Secret } from "@dagger.io/dagger";
 
+const SHELL = "/bin/sh";
 const MC_IMAGE = "minio/mc:RELEASE.2025-01-17T23-25-50Z";
 
 /**
@@ -45,8 +46,8 @@ export class ImageTags {
       .from(MC_IMAGE)
       .withSecretVariable("S3_ACCESS_KEY", s3AccessKey)
       .withSecretVariable("S3_SECRET_KEY", s3SecretKey)
-      .withExec(["sh", "-c", `mc alias set s3 "${this.s3Endpoint}" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"`])
-      .withExec(["sh", "-c", `mc cat "${s3Path}" 2>/dev/null || echo "{}"`])
+      .withExec([SHELL, "-c", `mc alias set s3 "${this.s3Endpoint}" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"`])
+      .withExec([SHELL, "-c", `mc cat "${s3Path}" 2>/dev/null || echo "{}"`])
       .stdout();
 
     return raw.trim();
@@ -77,7 +78,7 @@ export class ImageTags {
       .from(MC_IMAGE)
       .withSecretVariable("S3_ACCESS_KEY", s3AccessKey)
       .withSecretVariable("S3_SECRET_KEY", s3SecretKey)
-      .withExec(["sh", "-c", `mc alias set s3 "${this.s3Endpoint}" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"`])
+      .withExec([SHELL, "-c", `mc alias set s3 "${this.s3Endpoint}" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"`])
       .withNewFile("/tmp/image-tags.json", tagsJson)
       .withExec(["mc", "cp", "/tmp/image-tags.json", s3Path])
       .sync();

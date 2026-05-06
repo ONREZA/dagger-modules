@@ -1,5 +1,7 @@
 import { dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
+const SHELL = "/bin/sh";
+
 /**
  * Generic Bun build module.
  *
@@ -81,7 +83,7 @@ export class BunBuilder {
     }
 
     // Install CA certs for HTTPS requests during build (e.g., Sentry sourcemap upload)
-    ctr = ctr.withExec(["sh", "-c", "apt-get update -qq && apt-get install -y -qq ca-certificates > /dev/null 2>&1"]);
+    ctr = ctr.withExec([SHELL, "-c", "apt-get update -qq && apt-get install -y -qq ca-certificates > /dev/null 2>&1"]);
 
     ctr = ctr.withExec(["bun", "run", `build:${pkg}`]);
 

@@ -1,5 +1,7 @@
 import { type Directory, dag, func, object, type Secret } from "@dagger.io/dagger";
 
+const SHELL = "/bin/sh";
+
 /**
  * Generic Docker image build and registry push module.
  */
@@ -51,13 +53,13 @@ export class ImageBuilder {
 
     const username = (
       await ctr
-        .withExec(["sh", "-c", `jq -r '.auths["${this.registry}"].auth' /tmp/config.json | base64 -d | cut -d: -f1`])
+        .withExec([SHELL, "-c", `jq -r '.auths["${this.registry}"].auth' /tmp/config.json | base64 -d | cut -d: -f1`])
         .stdout()
     ).trim();
 
     const passwordPlaintext = (
       await ctr
-        .withExec(["sh", "-c", `jq -r '.auths["${this.registry}"].auth' /tmp/config.json | base64 -d | cut -d: -f2-`])
+        .withExec([SHELL, "-c", `jq -r '.auths["${this.registry}"].auth' /tmp/config.json | base64 -d | cut -d: -f2-`])
         .stdout()
     ).trim();
 

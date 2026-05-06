@@ -8,6 +8,8 @@ import {
   object,
 } from "@dagger.io/dagger";
 
+const SHELL = "/bin/sh";
+
 /**
  * Extract hostname from an SSH-style Git URL.
  *
@@ -96,13 +98,13 @@ export class GitTools {
     if (knownHosts) {
       ctr = ctr
         .withEnvVariable("__KNOWN_HOSTS", knownHosts)
-        .withExec(["sh", "-c", 'printf "%s\\n" "$__KNOWN_HOSTS" > /root/.ssh/known_hosts'])
+        .withExec([SHELL, "-c", 'printf "%s\\n" "$__KNOWN_HOSTS" > /root/.ssh/known_hosts'])
         .withoutEnvVariable("__KNOWN_HOSTS");
     } else if (host) {
       ctr = ctr
         .withEnvVariable("__KEYSCAN_HOST", host)
         .withExec([
-          "sh",
+          SHELL,
           "-c",
           `ssh-keyscan -p ${p} "$__KEYSCAN_HOST" >> /root/.ssh/known_hosts`,
         ])
@@ -123,7 +125,7 @@ export class GitTools {
    */
   private withAutoKeyscan(ctr: Container, remote: string, port: number): Container {
     return ctr.withExec([
-      "sh",
+      SHELL,
       "-c",
       `RURL=$(git remote get-url "${remote}" 2>/dev/null || true); `
         + `HOST=$(echo "$RURL" | sed -nE 's/.*@([^:/]+).*/\\1/p'); `

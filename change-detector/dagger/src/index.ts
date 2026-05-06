@@ -1,5 +1,7 @@
 import { dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
+const SHELL = "/bin/sh";
+
 interface ServiceDef {
   name: string;
   detectPaths: string[];
@@ -192,7 +194,7 @@ export class ChangeDetector {
       .container()
       .from("cgr.dev/chainguard/crane:latest-dev@sha256:e0b9051884102836e487ab9a707c510d5fb8d6688b4c9d05441b4d136f2a31ee")
       .withMountedSecret("/run/secrets/dockerconfig", registryAuth, { mode: 0o444 })
-      .withExec(["sh", "-c", "mkdir -p ~/.docker && cat /run/secrets/dockerconfig > ~/.docker/config.json"]);
+      .withExec([SHELL, "-c", "mkdir -p ~/.docker && cat /run/secrets/dockerconfig > ~/.docker/config.json"]);
 
     const now = new Date();
     const year = now.getUTCFullYear();
@@ -201,7 +203,7 @@ export class ChangeDetector {
     const versionPattern = /^v\d{4}\.\d{4}\.\d{3}$/;
 
     const existingRaw = await craneCtr
-      .withExec(["sh", "-c", `crane ls "${registry}/${repo}" 2>/dev/null || echo ""`])
+      .withExec([SHELL, "-c", `crane ls "${registry}/${repo}" 2>/dev/null || echo ""`])
       .stdout();
 
     const existing = existingRaw.trim().split("\n").filter(Boolean);
@@ -214,7 +216,7 @@ export class ChangeDetector {
       const checkResult = (
         await craneCtr
           .withExec([
-            "sh",
+            SHELL,
             "-c",
             `crane manifest "${registry}/${repo}:${version}" > /dev/null 2>&1 && echo "exists" || echo "free"`,
           ])
