@@ -1,6 +1,7 @@
 import { dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
-const SHELL = "/bin/sh";
+const SHELL = "sh";
+const CRANE_IMAGE = "gcr.io/go-containerregistry/crane:debug@sha256:22de5fee4326edae01a568c5a53b69c755901c5f5aa1c06a7c907bef18937356";
 
 interface ServiceDef {
   name: string;
@@ -192,9 +193,9 @@ export class ChangeDetector {
   ): Promise<string> {
     const craneCtr = dag
       .container()
-      .from("cgr.dev/chainguard/crane:latest-dev@sha256:e0b9051884102836e487ab9a707c510d5fb8d6688b4c9d05441b4d136f2a31ee")
-      .withMountedSecret("/run/secrets/dockerconfig", registryAuth, { mode: 0o444 })
-      .withExec([SHELL, "-c", "mkdir -p ~/.docker && cat /run/secrets/dockerconfig > ~/.docker/config.json"]);
+      .from(CRANE_IMAGE)
+      .withUser("root")
+      .withMountedSecret("/root/.docker/config.json", registryAuth, { mode: 0o400 });
 
     const now = new Date();
     const year = now.getUTCFullYear();
