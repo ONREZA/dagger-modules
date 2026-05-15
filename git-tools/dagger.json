@@ -1,6 +1,6 @@
 {
   "name": "git-tools",
-  "engineVersion": "v0.20.1",
+  "engineVersion": "v0.20.8",
   "sdk": {
     "source": "typescript"
   },

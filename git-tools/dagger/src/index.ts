@@ -167,7 +167,7 @@ export class GitTools {
     /** HTTP auth username (used with httpAuthToken, e.g., "x-access-token" for GitHub) */
     httpAuthUsername: string = "",
     /** SSH port for custom Git hosts (default: 22) */
-    sshPort: number = 22,
+    sshPort?: number,
     /** Custom known_hosts content (skips ssh-keyscan when provided) */
     knownHosts?: string,
     /** Clone depth (0 = full history) */
@@ -195,7 +195,7 @@ export class GitTools {
       }
 
       let ctr = this.base();
-      ctr = this.withSsh(ctr, sshKey, sshPort, knownHosts, host);
+      ctr = this.withSsh(ctr, sshKey, sshPort ?? 22, knownHosts, host);
 
       const args = ["git", "clone"];
       if (depth > 0) args.push("--depth", String(depth));
@@ -260,7 +260,7 @@ export class GitTools {
     /** SSH private key for remote operations */
     sshKey?: Secret,
     /** SSH port (default: 22) */
-    sshPort: number = 22,
+    sshPort?: number,
     /** Custom known_hosts content */
     knownHosts?: string,
     /** SSH host for keyscan (required when sshKey is set and knownHosts is not) */
@@ -271,7 +271,7 @@ export class GitTools {
       .withWorkdir("/src");
 
     if (sshKey) {
-      ctr = this.withSsh(ctr, sshKey, sshPort, knownHosts, sshHost);
+      ctr = this.withSsh(ctr, sshKey, sshPort ?? 22, knownHosts, sshHost);
     }
 
     return ctr;
@@ -447,7 +447,7 @@ export class GitTools {
     /** SSH private key for authentication */
     sshKey?: Secret,
     /** SSH port (default: 22) */
-    sshPort: number = 22,
+    sshPort?: number,
     /** Custom known_hosts content */
     knownHosts?: string,
     /** SSH host for keyscan (auto-detected from remote URL when empty) */
@@ -458,9 +458,10 @@ export class GitTools {
       .withWorkdir("/src");
 
     if (sshKey) {
-      ctr = this.withSsh(ctr, sshKey, sshPort, knownHosts, sshHost);
+      const port = sshPort ?? 22;
+      ctr = this.withSsh(ctr, sshKey, port, knownHosts, sshHost);
       if (!sshHost && !knownHosts) {
-        ctr = this.withAutoKeyscan(ctr, remote, sshPort);
+        ctr = this.withAutoKeyscan(ctr, remote, port);
       }
     }
 
@@ -486,7 +487,7 @@ export class GitTools {
     /** SSH private key for authentication */
     sshKey?: Secret,
     /** SSH port (default: 22) */
-    sshPort: number = 22,
+    sshPort?: number,
     /** Custom known_hosts content */
     knownHosts?: string,
     /** SSH host for keyscan */
@@ -497,9 +498,10 @@ export class GitTools {
       .withWorkdir("/src");
 
     if (sshKey) {
-      ctr = this.withSsh(ctr, sshKey, sshPort, knownHosts, sshHost);
+      const port = sshPort ?? 22;
+      ctr = this.withSsh(ctr, sshKey, port, knownHosts, sshHost);
       if (!sshHost && !knownHosts) {
-        ctr = this.withAutoKeyscan(ctr, remote, sshPort);
+        ctr = this.withAutoKeyscan(ctr, remote, port);
       }
     }
 
