@@ -203,9 +203,7 @@ export class ChangeDetector {
     const datePrefix = `v${year}.${mmdd}`;
     const versionPattern = /^v\d{4}\.\d{4}\.\d{3}$/;
 
-    const existingRaw = await craneCtr
-      .withExec([SHELL, "-c", `crane ls "${registry}/${repo}" 2>/dev/null || echo ""`])
-      .stdout();
+    const existingRaw = await craneCtr.withExec([SHELL, "-c", `crane ls "${registry}/${repo}"`]).stdout();
 
     const existing = existingRaw.trim().split("\n").filter(Boolean);
     const todayTags = existing.filter((t) => t.startsWith(datePrefix) && versionPattern.test(t)).sort();
@@ -219,7 +217,16 @@ export class ChangeDetector {
           .withExec([
             SHELL,
             "-c",
-            `crane manifest "${registry}/${repo}:${version}" > /dev/null 2>&1 && echo "exists" || echo "free"`,
+            [
+              `if crane manifest "${registry}/${repo}:${version}" >/dev/null 2>/tmp/crane-manifest.err; then`,
+              '  echo "exists"',
+              "elif grep -Eiq '(manifest unknown|manifest_unknown|name unknown|name_unknown|not found|404)' /tmp/crane-manifest.err; then",
+              '  echo "free"',
+              "else",
+              "  cat /tmp/crane-manifest.err >&2",
+              "  exit 1",
+              "fi",
+            ].join("\n"),
           ])
           .stdout()
       ).trim();
