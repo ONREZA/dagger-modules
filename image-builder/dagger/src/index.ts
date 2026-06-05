@@ -1,6 +1,4 @@
-import { type Directory, dag, func, object, type Secret } from "@dagger.io/dagger";
-
-const SHELL = "/bin/sh";
+import { type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
 /**
  * Generic Docker image build and registry push module.
@@ -26,7 +24,8 @@ export class ImageBuilder {
     name: string,
     dockerfile: string,
     tag: string,
-    registryAuth: Secret,
+    registryUsername: string,
+    registryPassword: Secret,
     organization: string = "",
     buildArgs: string = "",
   ): Promise<string> {
@@ -44,28 +43,6 @@ export class ImageBuilder {
       }
     }
 
-    // Extract registry credentials from dockerconfigjson
-    const ctr = dag
-      .container()
-      .from("alpine:3.21")
-      .withMountedCache("/var/cache/apk", dag.cacheVolume("image-builder-apk-cache"))
-      .withExec(["apk", "add", "--cache-dir", "/var/cache/apk", "--update-cache", "jq"])
-      .withMountedSecret("/tmp/config.json", registryAuth);
-
-    const username = (
-      await ctr
-        .withExec([SHELL, "-c", `jq -r '.auths["${this.registry}"].auth' /tmp/config.json | base64 -d | cut -d: -f1`])
-        .stdout()
-    ).trim();
-
-    const passwordPlaintext = (
-      await ctr
-        .withExec([SHELL, "-c", `jq -r '.auths["${this.registry}"].auth' /tmp/config.json | base64 -d | cut -d: -f2-`])
-        .stdout()
-    ).trim();
-
-    const password = dag.setSecret(`${this.registry}-password`, passwordPlaintext);
-
     const buildOpts: { dockerfile: string; buildArgs?: { name: string; value: string }[] } = { dockerfile };
     if (parsedArgs.length > 0) {
       buildOpts.buildArgs = parsedArgs;
@@ -73,7 +50,7 @@ export class ImageBuilder {
 
     const ref = await source
       .dockerBuild(buildOpts)
-      .withRegistryAuth(this.registry, username, password)
+      .withRegistryAuth(this.registry, registryUsername, registryPassword)
       .publish(imageRef);
 
     return ref;

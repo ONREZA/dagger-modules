@@ -117,7 +117,7 @@ dagger -m ./cargo-builder call build \
 
 ### image-builder
 
-Build Docker images and push them to any container registry. Extracts credentials from dockerconfigjson secrets.
+Build Docker images and push them to any container registry. Registry credentials are passed explicitly so the module never parses or logs dockerconfigjson secrets.
 
 #### Build and publish
 
@@ -129,7 +129,8 @@ dagger -m ./image-builder call \
     --name=my-service \
     --dockerfile=deploy/Dockerfile \
     --tag=v1.2.3 \
-    --registry-auth=file:~/.docker/config.json \
+    --registry-username="$REGISTRY_USERNAME" \
+    --registry-password=env:REGISTRY_PASSWORD \
     --organization=my-org
 ```
 
@@ -143,7 +144,8 @@ dagger -m ./image-builder call \
     --name=my-app \
     --dockerfile=Dockerfile \
     --tag=latest \
-    --registry-auth=file:~/.docker/config.json \
+    --registry-username="$REGISTRY_USERNAME" \
+    --registry-password=env:REGISTRY_PASSWORD \
     --build-args="NODE_VERSION=20,ALPINE_VERSION=3.21"
 ```
 
