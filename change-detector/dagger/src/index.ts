@@ -14,6 +14,36 @@ interface GroupDef {
   detectPaths: string[];
 }
 
+interface DirectReason {
+  paths: string[];
+}
+
+interface ServiceReason extends DirectReason {
+  dependencies: string[];
+}
+
+interface ChangeMetadata {
+  commitSha: string;
+  shortSha: string;
+  timestamp: string;
+  lastTag: string;
+}
+
+export interface DetailedChangeDetectionResult {
+  services: Record<string, boolean>;
+  groups: Record<string, boolean>;
+  commitSha: string;
+  shortSha: string;
+  timestamp: string;
+  anyChanged: boolean;
+  lastTag: string;
+  changedFiles: string[];
+  reasons: {
+    services: Record<string, ServiceReason>;
+    groups: Record<string, DirectReason>;
+  };
+}
+
 /**
  * Generic git-diff based change detection with glob patterns.
  *
@@ -46,109 +76,26 @@ export class ChangeDetector {
     servicesJson: string = "[]",
     groupsJson: string = "[]",
   ): Promise<string> {
-    const services = JSON.parse(servicesJson) as ServiceDef[];
-    const groups = JSON.parse(groupsJson) as GroupDef[];
+    const result = await detectChangesFromGit(source, tagPrefix, servicesJson, groupsJson, forceAll);
+    return JSON.stringify(toDetectResult(result));
+  }
 
-    // Validate dependencies early — catch config errors even with forceAll
-    const groupNames = new Set(groups.map((g) => g.name));
-    const seenServices = new Set<string>();
-    for (const svc of services) {
-      for (const dep of svc.dependsOn ?? []) {
-        if (!groupNames.has(dep) && !seenServices.has(dep)) {
-          throw new Error(
-            `Service "${svc.name}" depends on "${dep}" which is neither a group nor a service defined earlier in the list.`,
-          );
-        }
-      }
-      seenServices.add(svc.name);
-    }
-
-    const gitCtr = dag
-      .container()
-      .from("alpine:3.21")
-      .withExec(["apk", "add", "--no-cache", "git"])
-      .withMountedDirectory("/src", source)
-      .withWorkdir("/src")
-      .withExec(["git", "config", "--global", "--add", "safe.directory", "/src"]);
-
-    const commitSha = (await gitCtr.withExec(["git", "rev-parse", "HEAD"]).stdout()).trim();
-    const shortSha = commitSha.slice(0, 8);
-    const timestamp = (
-      await gitCtr.withExec(["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d-%H%M%S", commitSha]).stdout()
-    ).trim();
-
-    if (forceAll) {
-      return JSON.stringify({
-        services: Object.fromEntries(services.map((s) => [s.name, true])),
-        groups: Object.fromEntries(groups.map((g) => [g.name, true])),
-        commitSha,
-        shortSha,
-        timestamp,
-        anyChanged: true,
-      });
-    }
-
-    // Find last tag matching the prefix
-    const allTagsRaw = (
-      await gitCtr.withExec(["git", "tag", "-l", `${tagPrefix}-*`, "--sort=-creatordate"]).stdout()
-    ).trim();
-    const lastTag = allTagsRaw.split("\n")[0] ?? "";
-
-    if (!lastTag) {
-      return JSON.stringify({
-        services: Object.fromEntries(services.map((s) => [s.name, true])),
-        groups: Object.fromEntries(groups.map((g) => [g.name, true])),
-        commitSha,
-        shortSha,
-        timestamp,
-        anyChanged: true,
-      });
-    }
-
-    const changedFilesRaw = (
-      await gitCtr.withExec(["git", "diff", "--name-only", lastTag, "HEAD"]).stdout()
-    ).trim();
-
-    if (!changedFilesRaw) {
-      return JSON.stringify({
-        services: Object.fromEntries(services.map((s) => [s.name, false])),
-        groups: Object.fromEntries(groups.map((g) => [g.name, false])),
-        commitSha,
-        shortSha,
-        timestamp,
-        anyChanged: false,
-      });
-    }
-
-    const changedFiles = changedFilesRaw.split("\n").filter(Boolean);
-
-    // Match groups first (services may depend on them)
-    const groupChanges: Record<string, boolean> = {};
-    for (const group of groups) {
-      const patterns = group.detectPaths.map(globToRegex);
-      groupChanges[group.name] = changedFiles.some((f) => patterns.some((p) => p.test(f)));
-    }
-
-    // Match services (direct path match + dependency propagation)
-    const serviceChanges: Record<string, boolean> = {};
-    for (const svc of services) {
-      const patterns = svc.detectPaths.map(globToRegex);
-      const directMatch = changedFiles.some((f) => patterns.some((p) => p.test(f)));
-      const depMatch = svc.dependsOn?.some((dep) => groupChanges[dep] || serviceChanges[dep]) ?? false;
-      serviceChanges[svc.name] = directMatch || depMatch;
-    }
-
-    const anyServiceChanged = Object.values(serviceChanges).some(Boolean);
-    const anyGroupChanged = Object.values(groupChanges).some(Boolean);
-
-    return JSON.stringify({
-      services: serviceChanges,
-      groups: groupChanges,
-      commitSha,
-      shortSha,
-      timestamp,
-      anyChanged: anyServiceChanged || anyGroupChanged,
-    });
+  /**
+   * Explain why services and groups changed.
+   *
+   * Keeps `detect` compact and backward-compatible while exposing tag,
+   * changed files, direct path matches, and propagated dependencies for debugging.
+   */
+  @func()
+  async explain(
+    source: Directory,
+    tagPrefix: string,
+    forceAll: boolean = false,
+    servicesJson: string = "[]",
+    groupsJson: string = "[]",
+  ): Promise<string> {
+    const result = await detectChangesFromGit(source, tagPrefix, servicesJson, groupsJson, forceAll);
+    return JSON.stringify(result, null, 2);
   }
 
   /**
@@ -235,6 +182,165 @@ export class ChangeDetector {
 
     throw new Error(`Failed to generate unique CalVer version after 10 attempts (prefix: ${datePrefix})`);
   }
+}
+
+async function detectChangesFromGit(
+  source: Directory,
+  tagPrefix: string,
+  servicesJson: string,
+  groupsJson: string,
+  forceAll: boolean,
+): Promise<DetailedChangeDetectionResult> {
+  const services = JSON.parse(servicesJson) as ServiceDef[];
+  const groups = JSON.parse(groupsJson) as GroupDef[];
+  validateDependencies(services, groups);
+
+  const gitCtr = dag
+    .container()
+    .from("alpine:3.21")
+    .withExec(["apk", "add", "--no-cache", "git"])
+    .withMountedDirectory("/src", source)
+    .withWorkdir("/src")
+    .withExec(["git", "config", "--global", "--add", "safe.directory", "/src"]);
+
+  const commitSha = (await gitCtr.withExec(["git", "rev-parse", "HEAD"]).stdout()).trim();
+  const shortSha = commitSha.slice(0, 8);
+  const timestamp = (
+    await gitCtr.withExec(["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d-%H%M%S", commitSha]).stdout()
+  ).trim();
+
+  const lastTag = forceAll ? "" : await findLastTag(gitCtr, tagPrefix);
+  if (forceAll || !lastTag) {
+    return forcedResult(services, groups, commitSha, shortSha, timestamp, lastTag);
+  }
+
+  const changedFiles = await listChangedFiles(gitCtr, lastTag);
+  return detectChangesForFiles(changedFiles, services, groups, { commitSha, shortSha, timestamp, lastTag });
+}
+
+export function detectChangesForFiles(
+  changedFiles: string[],
+  services: ServiceDef[],
+  groups: GroupDef[],
+  metadata: ChangeMetadata,
+): DetailedChangeDetectionResult {
+  if (changedFiles.length === 0) {
+    return {
+      services: Object.fromEntries(services.map((svc) => [svc.name, false])),
+      groups: Object.fromEntries(groups.map((group) => [group.name, false])),
+      commitSha: metadata.commitSha,
+      shortSha: metadata.shortSha,
+      timestamp: metadata.timestamp,
+      anyChanged: false,
+      lastTag: metadata.lastTag,
+      changedFiles,
+      reasons: { services: {}, groups: {} },
+    };
+  }
+
+  const groupChanges: Record<string, boolean> = {};
+  const groupReasons: Record<string, DirectReason> = {};
+  for (const group of groups) {
+    const paths = matchingFiles(changedFiles, group.detectPaths);
+    groupChanges[group.name] = paths.length > 0;
+    if (paths.length > 0) {
+      groupReasons[group.name] = { paths };
+    }
+  }
+
+  const serviceChanges: Record<string, boolean> = {};
+  const serviceReasons: Record<string, ServiceReason> = {};
+  for (const svc of services) {
+    const paths = matchingFiles(changedFiles, svc.detectPaths);
+    const dependencies = (svc.dependsOn ?? []).filter((dep) => groupChanges[dep] || serviceChanges[dep]);
+    const changed = paths.length > 0 || dependencies.length > 0;
+    serviceChanges[svc.name] = changed;
+    if (changed) {
+      serviceReasons[svc.name] = { paths, dependencies };
+    }
+  }
+
+  const anyServiceChanged = Object.values(serviceChanges).some(Boolean);
+  const anyGroupChanged = Object.values(groupChanges).some(Boolean);
+
+  return {
+    services: serviceChanges,
+    groups: groupChanges,
+    commitSha: metadata.commitSha,
+    shortSha: metadata.shortSha,
+    timestamp: metadata.timestamp,
+    anyChanged: anyServiceChanged || anyGroupChanged,
+    lastTag: metadata.lastTag,
+    changedFiles,
+    reasons: { services: serviceReasons, groups: groupReasons },
+  };
+}
+
+export function toDetectResult(result: DetailedChangeDetectionResult) {
+  return {
+    services: result.services,
+    groups: result.groups,
+    commitSha: result.commitSha,
+    shortSha: result.shortSha,
+    timestamp: result.timestamp,
+    anyChanged: result.anyChanged,
+  };
+}
+
+function validateDependencies(services: ServiceDef[], groups: GroupDef[]): void {
+  const groupNames = new Set(groups.map((group) => group.name));
+  const seenServices = new Set<string>();
+  for (const svc of services) {
+    for (const dep of svc.dependsOn ?? []) {
+      if (!groupNames.has(dep) && !seenServices.has(dep)) {
+        throw new Error(
+          `Service "${svc.name}" depends on "${dep}" which is neither a group nor a service defined earlier in the list.`,
+        );
+      }
+    }
+    seenServices.add(svc.name);
+  }
+}
+
+async function findLastTag(gitCtr: ReturnType<typeof dag.container>, tagPrefix: string): Promise<string> {
+  const allTagsRaw = (await gitCtr.withExec(["git", "tag", "-l", `${tagPrefix}-*`, "--sort=-creatordate"]).stdout())
+    .trim();
+  return allTagsRaw.split("\n")[0] ?? "";
+}
+
+async function listChangedFiles(gitCtr: ReturnType<typeof dag.container>, lastTag: string): Promise<string[]> {
+  const changedFilesRaw = (await gitCtr.withExec(["git", "diff", "--name-only", lastTag, "HEAD"]).stdout()).trim();
+  if (!changedFilesRaw) return [];
+  return changedFilesRaw.split("\n").filter(Boolean);
+}
+
+function forcedResult(
+  services: ServiceDef[],
+  groups: GroupDef[],
+  commitSha: string,
+  shortSha: string,
+  timestamp: string,
+  lastTag: string,
+): DetailedChangeDetectionResult {
+  return {
+    services: Object.fromEntries(services.map((svc) => [svc.name, true])),
+    groups: Object.fromEntries(groups.map((group) => [group.name, true])),
+    commitSha,
+    shortSha,
+    timestamp,
+    anyChanged: true,
+    lastTag,
+    changedFiles: [],
+    reasons: {
+      services: Object.fromEntries(services.map((svc) => [svc.name, { paths: [], dependencies: ["forceAll"] }])),
+      groups: Object.fromEntries(groups.map((group) => [group.name, { paths: ["forceAll"] }])),
+    },
+  };
+}
+
+function matchingFiles(files: string[], patterns: string[]): string[] {
+  const regexes = patterns.map(globToRegex);
+  return files.filter((file) => regexes.some((regex) => regex.test(file)));
 }
 
 /**
