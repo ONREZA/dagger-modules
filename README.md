@@ -13,6 +13,7 @@ Built with the **TypeScript SDK** and the **Bun** runtime.
 | [`image-builder`](#image-builder) | Docker image build + registry push with auth extraction |
 | [`change-detector`](#change-detector) | Git-diff change detection with glob patterns and dependency propagation |
 | [`image-tags`](#image-tags) | S3-backed image tag state management for deployment tracking |
+| [`tower`](#tower) | Tower release contract helpers for Dagger pipelines |
 
 ## Requirements
 
@@ -295,6 +296,32 @@ if (parsed.services.api) {
 const current = await dag.imageTags("https://s3.example.com").read("production", accessKey, secretKey);
 const merged = dag.imageTags("https://s3.example.com").merge(current, changedJson, servicesJson, feTag, uTag);
 await dag.imageTags("https://s3.example.com").write("production", merged, accessKey, secretKey);
+```
+
+---
+
+### tower
+
+Build Tower release contract lines from Dagger pipelines. The module does not
+build, deploy, or call Tower APIs; it only emits the generic `tower.release.v1`
+stdout contract parsed by Tower after release steps.
+
+#### Emit a release contract line
+
+```typescript
+const artifacts = [
+  JSON.parse(dag.tower().ociBundle("release", "oci://registry.example/app:2026.0610.001")),
+  JSON.parse(dag.tower().image("api", "registry.example/app-api@sha256:...")),
+];
+
+return dag.tower().emitRelease(
+  JSON.stringify(artifacts),
+  sourceCommit,
+  "refs/heads/main",
+  "",
+  "release-stage-20260610",
+  JSON.stringify({ environment: "stage" }),
+);
 ```
 
 ## Module Structure
