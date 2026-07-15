@@ -164,7 +164,9 @@ dagger -m ./image-builder call \
 
 `build` returns a pure `Container`; `publish` is marked `cache: never`. This
 lets callers evaluate independent Docker builds concurrently and serialize only
-registry pushes:
+registry pushes. `publish` retries transient registry/network failures up to four
+times with bounded exponential backoff and jitter. Authentication, invalid
+reference and invalid manifest errors fail immediately:
 
 ```typescript
 const builder = dag.imageBuilder({ registry: "ghcr.io" });
