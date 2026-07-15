@@ -1,7 +1,8 @@
-import { dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
+import { argument, dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
 const SHELL = "sh";
 const CRANE_IMAGE = "gcr.io/go-containerregistry/crane:debug@sha256:22de5fee4326edae01a568c5a53b69c755901c5f5aa1c06a7c907bef18937356";
+const GIT_IMAGE = "alpine/git:2.54.0";
 
 interface ServiceDef {
   name: string;
@@ -70,13 +71,29 @@ export class ChangeDetector {
    */
   @func()
   async detect(
+    @argument({
+      ignore: [
+        "target",
+        "**/target",
+        "node_modules",
+        "**/node_modules",
+        "dist",
+        "**/dist",
+        "out",
+        "**/out",
+        ".private",
+        ".cache",
+        "**/.cache",
+      ],
+    })
     source: Directory,
     tagPrefix: string,
     forceAll: boolean = false,
     servicesJson: string = "[]",
     groupsJson: string = "[]",
+    baseRef: string = "",
   ): Promise<string> {
-    const result = await detectChangesFromGit(source, tagPrefix, servicesJson, groupsJson, forceAll);
+    const result = await detectChangesFromGit(source, tagPrefix, servicesJson, groupsJson, forceAll, baseRef);
     return JSON.stringify(toDetectResult(result));
   }
 
@@ -88,13 +105,29 @@ export class ChangeDetector {
    */
   @func()
   async explain(
+    @argument({
+      ignore: [
+        "target",
+        "**/target",
+        "node_modules",
+        "**/node_modules",
+        "dist",
+        "**/dist",
+        "out",
+        "**/out",
+        ".private",
+        ".cache",
+        "**/.cache",
+      ],
+    })
     source: Directory,
     tagPrefix: string,
     forceAll: boolean = false,
     servicesJson: string = "[]",
     groupsJson: string = "[]",
+    baseRef: string = "",
   ): Promise<string> {
-    const result = await detectChangesFromGit(source, tagPrefix, servicesJson, groupsJson, forceAll);
+    const result = await detectChangesFromGit(source, tagPrefix, servicesJson, groupsJson, forceAll, baseRef);
     return JSON.stringify(result, null, 2);
   }
 
@@ -110,6 +143,21 @@ export class ChangeDetector {
    */
   @func()
   async readVersionFile(
+    @argument({
+      ignore: [
+        "target",
+        "**/target",
+        "node_modules",
+        "**/node_modules",
+        "dist",
+        "**/dist",
+        "out",
+        "**/out",
+        ".private",
+        ".cache",
+        "**/.cache",
+      ],
+    })
     source: Directory,
     filePath: string = ".bun-version",
     defaultVersion: string = "1",
@@ -190,6 +238,7 @@ async function detectChangesFromGit(
   servicesJson: string,
   groupsJson: string,
   forceAll: boolean,
+  baseRef: string,
 ): Promise<DetailedChangeDetectionResult> {
   const services = JSON.parse(servicesJson) as ServiceDef[];
   const groups = JSON.parse(groupsJson) as GroupDef[];
@@ -197,8 +246,7 @@ async function detectChangesFromGit(
 
   const gitCtr = dag
     .container()
-    .from("alpine:3.21")
-    .withExec(["apk", "add", "--no-cache", "git"])
+    .from(GIT_IMAGE)
     .withMountedDirectory("/src", source)
     .withWorkdir("/src")
     .withExec(["git", "config", "--global", "--add", "safe.directory", "/src"]);
@@ -209,7 +257,11 @@ async function detectChangesFromGit(
     await gitCtr.withExec(["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d-%H%M%S", commitSha]).stdout()
   ).trim();
 
-  const lastTag = forceAll ? "" : await findLastTag(gitCtr, tagPrefix);
+  const lastTag = forceAll
+    ? ""
+    : baseRef
+      ? await resolveBaseRef(gitCtr, baseRef)
+      : await findLastTag(gitCtr, tagPrefix);
   if (forceAll || !lastTag) {
     return forcedResult(services, groups, commitSha, shortSha, timestamp, lastTag);
   }
@@ -288,9 +340,18 @@ export function toDetectResult(result: DetailedChangeDetectionResult) {
 }
 
 function validateDependencies(services: ServiceDef[], groups: GroupDef[]): void {
-  const groupNames = new Set(groups.map((group) => group.name));
+  const groupNames = new Set<string>();
+  for (const group of groups) {
+    if (!group.name || groupNames.has(group.name)) throw new Error(`Duplicate or empty group name: ${group.name}`);
+    groupNames.add(group.name);
+    group.detectPaths.forEach(globToRegex);
+  }
   const seenServices = new Set<string>();
   for (const svc of services) {
+    if (!svc.name || seenServices.has(svc.name) || groupNames.has(svc.name)) {
+      throw new Error(`Duplicate, empty, or ambiguous service name: ${svc.name}`);
+    }
+    svc.detectPaths.forEach(globToRegex);
     for (const dep of svc.dependsOn ?? []) {
       if (!groupNames.has(dep) && !seenServices.has(dep)) {
         throw new Error(
@@ -303,9 +364,37 @@ function validateDependencies(services: ServiceDef[], groups: GroupDef[]): void 
 }
 
 async function findLastTag(gitCtr: ReturnType<typeof dag.container>, tagPrefix: string): Promise<string> {
-  const allTagsRaw = (await gitCtr.withExec(["git", "tag", "-l", `${tagPrefix}-*`, "--sort=-creatordate"]).stdout())
-    .trim();
+  const allTagsRaw = (
+    await gitCtr.withExec(["git", "tag", "--merged", "HEAD", "-l", `${tagPrefix}-*`, "--sort=-creatordate"]).stdout()
+  ).trim();
   return allTagsRaw.split("\n")[0] ?? "";
+}
+
+async function resolveBaseRef(gitCtr: ReturnType<typeof dag.container>, baseRef: string): Promise<string> {
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(baseRef) ||
+    baseRef.includes("..") ||
+    baseRef.includes("//") ||
+    baseRef.endsWith("/")
+  ) {
+    throw new Error(`Invalid base ref: ${baseRef}`);
+  }
+
+  let resolved: string;
+  try {
+    resolved = (
+      await gitCtr.withExec(["git", "rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`]).stdout()
+    ).trim();
+  } catch {
+    throw new Error(`Base ref does not resolve to a commit: ${baseRef}`);
+  }
+
+  try {
+    await gitCtr.withExec(["git", "merge-base", "--is-ancestor", resolved, "HEAD"]).sync();
+  } catch {
+    throw new Error(`Base ref is not an ancestor of HEAD: ${baseRef}`);
+  }
+  return resolved;
 }
 
 async function listChangedFiles(gitCtr: ReturnType<typeof dag.container>, lastTag: string): Promise<string[]> {

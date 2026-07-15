@@ -1,6 +1,29 @@
-import { type Container, dag, type Directory, func, object, type Secret, type Service } from "@dagger.io/dagger";
+import {
+  type CacheVolume,
+  CacheSharingMode,
+  type Container,
+  dag,
+  type Directory,
+  func,
+  object,
+  type Secret,
+  type Service,
+} from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
+
+function cacheSharingMode(value: string): CacheSharingMode {
+  switch (value.toLowerCase()) {
+    case "locked":
+      return CacheSharingMode.Locked;
+    case "private":
+      return CacheSharingMode.Private;
+    case "shared":
+      return CacheSharingMode.Shared;
+    default:
+      throw new Error(`Unsupported cache sharing mode: ${value}`);
+  }
+}
 
 function isAlpineImage(image: string): boolean {
   return image.includes("alpine");
@@ -31,6 +54,36 @@ function installSystemPackages(ctr: Container, buildImage: string, packages: str
       "rm -rf /var/lib/apt/lists/*",
     ].join(" && "),
   ]);
+}
+
+function validateBuildInputs(
+  targets: string[],
+  cacheId: string,
+  packages: string[],
+  workspaceManifest: string,
+  sshHost: string,
+  sshPort: number,
+): void {
+  if (targets.length === 0 || targets.some((target) => !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(target))) {
+    throw new Error("targets must be a non-empty comma-separated list of Cargo package or binary names");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(cacheId)) {
+    throw new Error(`Invalid cacheId: ${cacheId}`);
+  }
+  if (packages.some((name) => !/^[A-Za-z0-9][A-Za-z0-9+._:=~-]*$/.test(name))) {
+    throw new Error("extraPackages contains an invalid package name");
+  }
+  if (
+    workspaceManifest &&
+    (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(workspaceManifest) ||
+      workspaceManifest.includes("..") ||
+      workspaceManifest.includes("//"))
+  ) {
+    throw new Error(`Invalid workspaceManifest: ${workspaceManifest}`);
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(sshHost) || sshPort < 1 || sshPort > 65_535) {
+    throw new Error("sshHost or sshPort is invalid");
+  }
 }
 
 /**
@@ -79,6 +132,10 @@ export class CargoBuilder {
     sshPort: number = 22,
     dbService?: Service,
     dbHostname: string = "db",
+    registryCache?: CacheVolume,
+    gitCache?: CacheVolume,
+    targetCache?: CacheVolume,
+    cacheSharing: string = "shared",
   ): Promise<Directory> {
     const packageSet = new Set(extraPackages.split(/\s+/).filter(Boolean));
     if (sshKey) {
@@ -86,14 +143,22 @@ export class CargoBuilder {
       packageSet.add("git-lfs");
       packageSet.add("openssh-client");
     }
+    const targetList = targets
+      .split(",")
+      .map((target) => target.trim())
+      .filter(Boolean);
+    validateBuildInputs(targetList, cacheId, [...packageSet], workspaceManifest, sshHost, sshPort);
 
+    const sharing = cacheSharingMode(cacheSharing);
     let ctr = dag
       .container()
       .from(buildImage)
       // Persistent cargo cache volumes
-      .withMountedCache("/cargo-cache/registry", dag.cacheVolume(`cargo-registry-${cacheId}`))
-      .withMountedCache("/cargo-cache/git", dag.cacheVolume(`cargo-git-${cacheId}`))
-      .withMountedCache("/cargo-cache/target", dag.cacheVolume(`cargo-target-${cacheId}`))
+      .withMountedCache("/cargo-cache/registry", registryCache ?? dag.cacheVolume(`cargo-registry-${cacheId}`), {
+        sharing,
+      })
+      .withMountedCache("/cargo-cache/git", gitCache ?? dag.cacheVolume(`cargo-git-${cacheId}`), { sharing })
+      .withMountedCache("/cargo-cache/target", targetCache ?? dag.cacheVolume(`cargo-target-${cacheId}`), { sharing })
       .withEnvVariable("CARGO_HOME", "/cargo-cache")
       .withEnvVariable("CARGO_TARGET_DIR", "/cargo-cache/target");
 
@@ -138,11 +203,10 @@ export class CargoBuilder {
     if (buildEnv) {
       for (const pair of buildEnv.split(",")) {
         const eqIdx = pair.indexOf("=");
-        if (eqIdx > 0) {
-          const key = pair.slice(0, eqIdx);
-          const value = pair.slice(eqIdx + 1);
-          ctr = ctr.withEnvVariable(key, value);
-        }
+        if (eqIdx < 1) throw new Error(`Invalid build environment entry: ${pair}`);
+        const key = pair.slice(0, eqIdx);
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid build environment key: ${key}`);
+        ctr = ctr.withEnvVariable(key, pair.slice(eqIdx + 1));
       }
     }
 
@@ -164,7 +228,6 @@ export class CargoBuilder {
     }
 
     // Build cargo flags
-    const targetList = targets.split(",").map((t) => t.trim());
     const cargoFlags = targetList.map((t) => (binFlags ? `--bin ${t}` : `-p ${t}`)).join(" ");
 
     ctr = ctr.withExec([SHELL, "-c", `cargo build --release ${cargoFlags}`]);

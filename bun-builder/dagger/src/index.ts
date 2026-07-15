@@ -1,6 +1,28 @@
-import { type Container, dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
+import {
+  CacheSharingMode,
+  type CacheVolume,
+  type Container,
+  type Directory,
+  dag,
+  func,
+  object,
+  type Secret,
+} from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
+
+function cacheSharingMode(value: string): CacheSharingMode {
+  switch (value.toLowerCase()) {
+    case "locked":
+      return CacheSharingMode.Locked;
+    case "private":
+      return CacheSharingMode.Private;
+    case "shared":
+      return CacheSharingMode.Shared;
+    default:
+      throw new Error(`Unsupported cache sharing mode: ${value}`);
+  }
+}
 
 function isAlpineImage(image: string): boolean {
   return image.includes("alpine");
@@ -31,6 +53,25 @@ function installCaCertificates(ctr: Container, image: string): Container {
   ]);
 }
 
+function validatePackageName(pkg: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(pkg)) {
+    throw new Error(`Invalid Bun package build name: ${pkg}`);
+  }
+}
+
+function parseEnvironmentVariables(raw: string): Record<string, string> {
+  const value = JSON.parse(raw) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("envVarsJson must contain a JSON object");
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof entry !== "string") {
+      throw new Error(`Invalid environment variable entry: ${key}`);
+    }
+  }
+  return value as Record<string, string>;
+}
+
 /**
  * Generic Bun build module.
  *
@@ -47,15 +88,28 @@ export class BunBuilder {
    * @param bunImage - Bun Docker image to use
    */
   @func()
-  async install(source: Directory, bunImage: string = "oven/bun:1-debian"): Promise<Directory> {
-    return dag
+  async install(
+    source: Directory,
+    bunImage: string = "oven/bun:1-debian",
+    installCache?: CacheVolume,
+    cacheSharing: string = "shared",
+  ): Promise<Directory> {
+    const dependencyInput = source.filter({
+      include: ["package.json", "bun.lock", "bunfig.toml", "**/package.json", "**/bunfig.toml"],
+      exclude: ["**/node_modules/**"],
+    });
+    const installed = dag
       .container()
       .from(bunImage)
-      .withMountedDirectory("/app", source)
+      .withDirectory("/app", dependencyInput)
       .withWorkdir("/app")
-      .withMountedCache("/root/.bun/install/cache", dag.cacheVolume("bun-install-cache"))
+      .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {
+        sharing: cacheSharingMode(cacheSharing),
+      })
       .withExec(["bun", "install", "--frozen-lockfile", "--ignore-scripts"])
       .directory("/app");
+
+    return source.withDirectory(".", installed);
   }
 
   /**
@@ -82,8 +136,11 @@ export class BunBuilder {
     bunImage: string = "oven/bun:1-debian",
     sentryRelease: string = "",
     sentryToken?: Secret,
+    installCache?: CacheVolume,
+    cacheSharing: string = "shared",
   ): Promise<Directory> {
-    const envVars = JSON.parse(envVarsJson) as Record<string, string>;
+    validatePackageName(pkg);
+    const envVars = parseEnvironmentVariables(envVarsJson);
 
     let ctr = dag
       .container()
@@ -94,7 +151,9 @@ export class BunBuilder {
     ctr = ctr
       .withMountedDirectory("/app", source)
       .withWorkdir("/app")
-      .withMountedCache("/root/.bun/install/cache", dag.cacheVolume("bun-install-cache"))
+      .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {
+        sharing: cacheSharingMode(cacheSharing),
+      })
       .withEnvVariable("NODE_ENV", "production");
 
     if (databaseUrl) {
@@ -138,13 +197,18 @@ export class BunBuilder {
     pkg: string,
     databaseUrl: string = "",
     bunImage: string = "oven/bun:1-debian",
+    installCache?: CacheVolume,
+    cacheSharing: string = "shared",
   ): Promise<Directory> {
+    validatePackageName(pkg);
     let ctr = dag
       .container()
       .from(bunImage)
       .withMountedDirectory("/app", source)
       .withWorkdir("/app")
-      .withMountedCache("/root/.bun/install/cache", dag.cacheVolume("bun-install-cache"));
+      .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {
+        sharing: cacheSharingMode(cacheSharing),
+      });
 
     if (databaseUrl) {
       ctr = ctr.withEnvVariable("DATABASE_URL", databaseUrl);

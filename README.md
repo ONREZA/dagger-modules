@@ -17,7 +17,7 @@ Built with the **TypeScript SDK** and the **Bun** runtime.
 
 ## Requirements
 
-- [Dagger CLI](https://docs.dagger.io/install/) v0.20.0+
+- [Dagger CLI](https://docs.dagger.io/install/) v0.21.7+
 - Docker (for the Dagger engine)
 
 ## Usage
@@ -35,6 +35,12 @@ Install dependencies, build frontend packages, and compile standalone Bun binari
 ```bash
 dagger -m ./bun-builder call install --source=.
 ```
+
+`install` filters its cache key to lockfiles and root/workspace `package.json` or
+`bunfig.toml` files outside `node_modules`, then overlays the resulting install
+output onto the full source.
+Application-only edits therefore reuse the dependency-install layer. Composed
+modules may also pass their own `CacheVolume` and `cache-sharing` mode.
 
 #### Build a frontend package
 
@@ -68,6 +74,10 @@ dagger -m ./bun-builder call build-binary \
 ### cargo-builder
 
 Build Rust binaries with persistent cargo cache volumes. Supports both Alpine (musl) and Debian (glibc) build images, workspace manifests, SSH private dependencies, and database service bindings for compile-time verification.
+
+Composed modules may supply separate registry, git and target `CacheVolume`
+objects. Keep target caches separate when profiles use incompatible compiler
+flags; registry and git caches can normally be shared.
 
 #### Basic build
 
@@ -150,6 +160,25 @@ dagger -m ./image-builder call \
     --build-args="NODE_VERSION=20,ALPINE_VERSION=3.21"
 ```
 
+#### Split build and publish in composed pipelines
+
+`build` returns a pure `Container`; `publish` is marked `cache: never`. This
+lets callers evaluate independent Docker builds concurrently and serialize only
+registry pushes:
+
+```typescript
+const builder = dag.imageBuilder({ registry: "ghcr.io" });
+const images = services.map((service) =>
+  builder.build(source, service.dockerfile, { buildArgs: service.buildArgs }),
+);
+await Promise.all(images.map((image) => image.sync()));
+for (const [index, image] of images.entries()) {
+  await builder.publish(image, services[index].name, tag, username, password, {
+    organization: "my-org",
+  });
+}
+```
+
 ---
 
 ### change-detector
@@ -190,6 +219,19 @@ dagger -m ./change-detector call detect \
   --source=. \
   --tag-prefix=v \
   --force-all
+```
+
+#### Compare with an exact previous release commit
+
+Pass an ancestor commit or ref through `base-ref` to avoid depending on tag
+discovery. The detector rejects a ref that is not an ancestor of `HEAD`.
+
+```bash
+dagger -m ./change-detector call detect \
+  --source=. \
+  --tag-prefix=v \
+  --base-ref=0123456789abcdef0123456789abcdef01234567 \
+  --services-json='[{"name":"api","detectPaths":["packages/api/**"]}]'
 ```
 
 #### Read a version file
