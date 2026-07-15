@@ -398,7 +398,9 @@ async function resolveBaseRef(gitCtr: ReturnType<typeof dag.container>, baseRef:
 }
 
 async function listChangedFiles(gitCtr: ReturnType<typeof dag.container>, lastTag: string): Promise<string[]> {
-  const changedFilesRaw = (await gitCtr.withExec(["git", "diff", "--name-only", lastTag, "HEAD"]).stdout()).trim();
+  const changedFilesRaw = (
+    await gitCtr.withExec(["git", "diff", "--no-renames", "--name-only", lastTag, "HEAD"]).stdout()
+  ).trim();
   if (!changedFilesRaw) return [];
   return changedFilesRaw.split("\n").filter(Boolean);
 }
