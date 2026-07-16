@@ -2,7 +2,8 @@
 
 Reusable [Dagger](https://dagger.io/) modules for CI/CD pipelines. Generic building blocks — not tied to any specific project.
 
-Built with the **TypeScript SDK** and the **Bun** runtime.
+Built with the **TypeScript SDK** and the Dagger **Node** runtime. The
+`bun-builder` module runs Bun inside build containers for Bun-based projects.
 
 ## Modules
 
