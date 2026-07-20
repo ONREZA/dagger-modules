@@ -11,6 +11,370 @@ const MAX_I32 = 2_147_483_647;
 
 type JsonObject = Record<string, unknown>;
 
+function requiredText(value: string, field: string): string {
+  const normalized = value.trim();
+  if (normalized === "") {
+    throw new Error(`${field} must not be empty`);
+  }
+  return normalized;
+}
+
+function optionalProperty(value: string): string | undefined {
+  const normalized = value.trim();
+  return normalized === "" ? undefined : normalized;
+}
+
+function validateStringPattern(pattern: string | undefined, defaultValue?: string): void {
+  if (!pattern) {
+    return;
+  }
+  let matcher: RegExp;
+  try {
+    matcher = new RegExp(pattern);
+  } catch (error) {
+    throw new Error(`pattern must be a valid regular expression: ${String(error)}`);
+  }
+  if (defaultValue !== undefined && !matcher.test(defaultValue)) {
+    throw new Error("defaultValue must match pattern");
+  }
+}
+
+function validateWorkflowName(name: string, field: string): string {
+  const normalized = requiredText(name, field);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(normalized)) {
+    throw new Error(`${field} must match ^[a-z0-9][a-z0-9-]*$`);
+  }
+  return normalized;
+}
+
+function validateNumberOptions(
+  kind: "integer" | "number",
+  minimum?: number,
+  maximum?: number,
+  defaultValue?: number,
+): void {
+  for (const [field, value] of Object.entries({ minimum, maximum, defaultValue })) {
+    if (
+      value !== undefined &&
+      (!Number.isFinite(value) || (kind === "integer" && !Number.isInteger(value)))
+    ) {
+      throw new Error(`${field} must be a finite ${kind}`);
+    }
+  }
+  if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
+    throw new Error("minimum must not exceed maximum");
+  }
+  if (defaultValue !== undefined && minimum !== undefined && defaultValue < minimum) {
+    throw new Error("defaultValue must be at least minimum");
+  }
+  if (defaultValue !== undefined && maximum !== undefined && defaultValue > maximum) {
+    throw new Error("defaultValue must be at most maximum");
+  }
+}
+
+/**
+ * Type-safe builder for Tower Dagger parameters.
+ */
+@object()
+export class TowerDaggerParams {
+  private readonly paramsJson: string;
+
+  constructor(paramsJson = "[]") {
+    this.paramsJson = paramsJson;
+  }
+
+  private withParam(paramJson: string): TowerDaggerParams {
+    const params = parseObjectArrayJson(this.paramsJson, "params");
+    const param = parseObjectJson(paramJson, "param");
+    if (params.some((existing) => existing.flag === param.flag)) {
+      throw new Error(`Dagger parameter flag '${String(param.flag)}' is already defined`);
+    }
+    params.push(param);
+    return new TowerDaggerParams(JSON.stringify(params));
+  }
+
+  /** Map a workflow input to a Dagger value argument. */
+  @func()
+  withInput(flag: string, input: string): TowerDaggerParams {
+    return this.withParam(JSON.stringify({
+      flag: requiredText(flag, "flag"),
+      source: "Input",
+      target: "Value",
+      value: requiredText(input, "input"),
+    }));
+  }
+
+  /** Pass a literal Dagger value argument. */
+  @func()
+  withValue(flag: string, value: string): TowerDaggerParams {
+    return this.withParam(JSON.stringify({
+      flag: requiredText(flag, "flag"),
+      source: "Value",
+      target: "Value",
+      value,
+    }));
+  }
+
+  /** Read a Kubernetes Secret key and pass it as a Dagger Secret. */
+  @func()
+  withSecret(flag: string, resourceName: string, resourceKey: string): TowerDaggerParams {
+    return this.withParam(JSON.stringify({
+      flag: requiredText(flag, "flag"),
+      source: "Secret",
+      target: "Secret",
+      resource_name: requiredText(resourceName, "resourceName"),
+      resource_key: requiredText(resourceKey, "resourceKey"),
+    }));
+  }
+
+  /** Read a Kubernetes Secret key and pass it as a plain Dagger value. */
+  @func()
+  withSecretValue(flag: string, resourceName: string, resourceKey: string): TowerDaggerParams {
+    return this.withParam(JSON.stringify({
+      flag: requiredText(flag, "flag"),
+      source: "Secret",
+      target: "Value",
+      resource_name: requiredText(resourceName, "resourceName"),
+      resource_key: requiredText(resourceKey, "resourceKey"),
+    }));
+  }
+
+  /** Read a Kubernetes ConfigMap key and pass it as a Dagger value. */
+  @func()
+  withConfigMap(flag: string, resourceName: string, resourceKey: string): TowerDaggerParams {
+    return this.withParam(JSON.stringify({
+      flag: requiredText(flag, "flag"),
+      source: "ConfigMap",
+      target: "Value",
+      resource_name: requiredText(resourceName, "resourceName"),
+      resource_key: requiredText(resourceKey, "resourceKey"),
+    }));
+  }
+
+  /** Serialize parameters at the Tower workflow contract boundary. */
+  @func()
+  json(): string {
+    return JSON.stringify(parseObjectArrayJson(this.paramsJson, "params"));
+  }
+}
+
+/**
+ * Type-safe builder for the scalar workflow inputs supported by Tower.
+ */
+@object()
+export class TowerInputSchema {
+  private readonly propertiesJson: string;
+  private readonly required: string[];
+  private readonly defaultInputsJson: string;
+  private readonly additionalProperties: boolean;
+
+  constructor(
+    propertiesJson = "{}",
+    required: string[] = [],
+    defaultInputsJson = "{}",
+    additionalProperties = false,
+  ) {
+    this.propertiesJson = propertiesJson;
+    this.required = required;
+    this.defaultInputsJson = defaultInputsJson;
+    this.additionalProperties = additionalProperties;
+  }
+
+  private withProperty(
+    name: string,
+    propertyJson: string,
+    required: boolean,
+    defaultValueJson?: string,
+  ): TowerInputSchema {
+    const key = requiredText(name, "name");
+    const properties = parseObjectJson(this.propertiesJson, "properties");
+    const defaults = parseObjectJson(this.defaultInputsJson, "defaultInputs");
+    if (properties[key] !== undefined) {
+      throw new Error(`Workflow input '${key}' is already defined`);
+    }
+    properties[key] = parseObjectJson(propertyJson, "property");
+    if (defaultValueJson !== undefined) {
+      defaults[key] = parseJson(defaultValueJson, "defaultValue");
+    }
+    return new TowerInputSchema(
+      JSON.stringify(properties),
+      required && !this.required.includes(key) ? [...this.required, key] : this.required,
+      JSON.stringify(defaults),
+      this.additionalProperties,
+    );
+  }
+
+  /** Add a text input. */
+  @func()
+  withString(
+    name: string,
+    title = "",
+    description = "",
+    pattern = "",
+    required = false,
+    readOnly = false,
+    defaultValue?: string,
+  ): TowerInputSchema {
+    const normalizedTitle = optionalProperty(title);
+    const normalizedDescription = optionalProperty(description);
+    const normalizedPattern = optionalProperty(pattern);
+    validateStringPattern(normalizedPattern, defaultValue);
+    return this.withProperty(
+      name,
+      JSON.stringify({
+        type: "string",
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(normalizedPattern ? { pattern: normalizedPattern } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+      }),
+      required,
+      defaultValue === undefined ? undefined : JSON.stringify(defaultValue),
+    );
+  }
+
+  /** Add a select input with an explicit set of values. */
+  @func()
+  withChoice(
+    name: string,
+    choices: string[],
+    title = "",
+    description = "",
+    required = false,
+    readOnly = false,
+    defaultValue?: string,
+  ): TowerInputSchema {
+    const normalizedChoices = choices.map((choice, index) =>
+      requiredText(choice, `choices[${index}]`),
+    );
+    if (normalizedChoices.length === 0) {
+      throw new Error("choices must contain at least one value");
+    }
+    if (new Set(normalizedChoices).size !== normalizedChoices.length) {
+      throw new Error("choices must not contain duplicates");
+    }
+    if (defaultValue !== undefined && !normalizedChoices.includes(defaultValue)) {
+      throw new Error("defaultValue must be one of choices");
+    }
+    const normalizedTitle = optionalProperty(title);
+    const normalizedDescription = optionalProperty(description);
+    return this.withProperty(
+      name,
+      JSON.stringify({
+        type: "string",
+        enum: normalizedChoices,
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+      }),
+      required,
+      defaultValue === undefined ? undefined : JSON.stringify(defaultValue),
+    );
+  }
+
+  /** Add a boolean input. */
+  @func()
+  withBoolean(
+    name: string,
+    title = "",
+    description = "",
+    required = false,
+    readOnly = false,
+    defaultValue?: boolean,
+  ): TowerInputSchema {
+    const normalizedTitle = optionalProperty(title);
+    const normalizedDescription = optionalProperty(description);
+    return this.withProperty(
+      name,
+      JSON.stringify({
+        type: "boolean",
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+      }),
+      required,
+      defaultValue === undefined ? undefined : JSON.stringify(defaultValue),
+    );
+  }
+
+  /** Add a numeric input. */
+  @func()
+  withNumber(
+    name: string,
+    title = "",
+    description = "",
+    required = false,
+    readOnly = false,
+    minimum?: number,
+    maximum?: number,
+    defaultValue?: number,
+  ): TowerInputSchema {
+    validateNumberOptions("number", minimum, maximum, defaultValue);
+    const normalizedTitle = optionalProperty(title);
+    const normalizedDescription = optionalProperty(description);
+    return this.withProperty(
+      name,
+      JSON.stringify({
+        type: "number",
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(minimum !== undefined ? { minimum } : {}),
+        ...(maximum !== undefined ? { maximum } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+      }),
+      required,
+      defaultValue === undefined ? undefined : JSON.stringify(defaultValue),
+    );
+  }
+
+  /** Add an integer input. */
+  @func()
+  withInteger(
+    name: string,
+    title = "",
+    description = "",
+    required = false,
+    readOnly = false,
+    minimum?: number,
+    maximum?: number,
+    defaultValue?: number,
+  ): TowerInputSchema {
+    validateNumberOptions("integer", minimum, maximum, defaultValue);
+    const normalizedTitle = optionalProperty(title);
+    const normalizedDescription = optionalProperty(description);
+    return this.withProperty(
+      name,
+      JSON.stringify({
+        type: "integer",
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(minimum !== undefined ? { minimum } : {}),
+        ...(maximum !== undefined ? { maximum } : {}),
+        ...(readOnly ? { readOnly: true } : {}),
+      }),
+      required,
+      defaultValue === undefined ? undefined : JSON.stringify(defaultValue),
+    );
+  }
+
+  /** Serialize the JSON Schema consumed and validated by Tower. */
+  @func()
+  schemaJson(): string {
+    return JSON.stringify({
+      type: "object",
+      additionalProperties: this.additionalProperties,
+      properties: parseObjectJson(this.propertiesJson, "properties"),
+      ...(this.required.length > 0 ? { required: this.required } : {}),
+    });
+  }
+
+  /** Serialize defaults for the workflow profile. */
+  @func()
+  defaultsJson(): string {
+    return JSON.stringify(parseObjectJson(this.defaultInputsJson, "defaultInputs"));
+  }
+}
+
 type ReleaseArtifact = {
   kind: string;
   name: string;
@@ -217,12 +581,39 @@ function parseArtifactJson(value: string, field: string): ReleaseArtifact {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`${field} must be a JSON object`);
   }
-  const artifact = parsed as Partial<ReleaseArtifact>;
+  return normalizeArtifactJson(parsed as JsonObject, field);
+}
+
+function normalizeArtifactJson(artifact: JsonObject, field: string): ReleaseArtifact {
+  const kind = artifact.kind;
+  const name = artifact.name;
+  const ref = artifact.ref;
+  if (typeof kind !== "string") {
+    throw new Error(`${field}.kind must be a string`);
+  }
+  if (typeof name !== "string") {
+    throw new Error(`${field}.name must be a string`);
+  }
+  if (typeof ref !== "string") {
+    throw new Error(`${field}.ref must be a string`);
+  }
+  const digest = artifact.digest;
+  if (digest !== undefined && typeof digest !== "string") {
+    throw new Error(`${field}.digest must be a string`);
+  }
+  if (
+    artifact.metadata_json !== undefined &&
+    (artifact.metadata_json === null ||
+      typeof artifact.metadata_json !== "object" ||
+      Array.isArray(artifact.metadata_json))
+  ) {
+    throw new Error(`${field}.metadata_json must be a JSON object`);
+  }
   return normalizeArtifact(
-    String(artifact.kind ?? ""),
-    String(artifact.name ?? ""),
-    String(artifact.ref ?? ""),
-    String(artifact.digest ?? ""),
+    kind,
+    name,
+    ref,
+    digest ?? "",
     JSON.stringify(artifact.metadata_json ?? {}),
   );
 }
@@ -236,14 +627,7 @@ function parseArtifactsJson(value: string, allowEmpty = false): ReleaseArtifact[
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       throw new Error(`artifactsJson[${index}] must be a JSON object`);
     }
-    const artifact = entry as Partial<ReleaseArtifact>;
-    return normalizeArtifact(
-      String(artifact.kind ?? ""),
-      String(artifact.name ?? ""),
-      String(artifact.ref ?? ""),
-      String(artifact.digest ?? ""),
-      JSON.stringify(artifact.metadata_json ?? {}),
-    );
+    return normalizeArtifactJson(entry as JsonObject, `artifactsJson[${index}]`);
   });
   if (!allowEmpty && artifacts.length === 0) {
     throw new Error("artifactsJson must contain at least one artifact");
@@ -356,14 +740,18 @@ function normalizeWorkflowStep(step: Partial<WorkflowStep>, field: string): Work
 }
 
 function normalizeWorkflow(workflow: Partial<WorkflowProfile>, field: string): WorkflowProfile {
-  const name = optional(String(workflow.name ?? ""));
-  if (!name) {
-    throw new Error(`${field}.name must not be empty`);
-  }
+  const name = validateWorkflowName(String(workflow.name ?? ""), `${field}.name`);
   const kind = requiredEnum(String(workflow.kind ?? ""), `${field}.kind`, WORKFLOW_KINDS);
   const steps = (workflow.steps ?? []).map((step, index) => normalizeWorkflowStep(step, `${field}.steps[${index}]`));
   if (steps.length === 0) {
     throw new Error(`${field}.steps must contain at least one step`);
+  }
+  const stepNames = new Set<string>();
+  for (const step of steps) {
+    if (stepNames.has(step.name)) {
+      throw new Error(`${field}.steps declares ${JSON.stringify(step.name)} more than once`);
+    }
+    stepNames.add(step.name);
   }
   const displayName = optional(String(workflow.display_name ?? ""));
   const daggerModule = optional(String(workflow.dagger_module ?? ""));
@@ -403,6 +791,13 @@ function buildWorkflowSpec(workflowsJson: string): WorkflowSpec {
   if (workflows.length === 0) {
     throw new Error("workflowsJson must contain at least one workflow");
   }
+  const workflowNames = new Set<string>();
+  for (const workflow of workflows) {
+    if (workflowNames.has(workflow.name)) {
+      throw new Error(`workflowsJson declares ${JSON.stringify(workflow.name)} more than once`);
+    }
+    workflowNames.add(workflow.name);
+  }
   return {
     schema: WORKFLOW_SCHEMA,
     workflows,
@@ -418,6 +813,18 @@ function buildWorkflowSpec(workflowsJson: string): WorkflowSpec {
  */
 @object()
 export class Tower {
+  /** Build Dagger parameters without hand-writing workflow contract JSON. */
+  @func()
+  daggerParams(): TowerDaggerParams {
+    return new TowerDaggerParams();
+  }
+
+  /** Build a scalar workflow input schema without hand-writing JSON Schema. */
+  @func()
+  inputSchema(additionalProperties = false): TowerInputSchema {
+    return new TowerInputSchema("{}", [], "{}", additionalProperties);
+  }
+
   /**
    * Return an empty JSON array for builder append helpers.
    */

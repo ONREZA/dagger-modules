@@ -14,7 +14,7 @@ Built with the **TypeScript SDK** and the Dagger **Node** runtime. The
 | [`image-builder`](#image-builder) | Docker image build + registry push with auth extraction |
 | [`change-detector`](#change-detector) | Git-diff change detection with glob patterns and dependency propagation |
 | [`image-tags`](#image-tags) | S3-backed image tag state management for deployment tracking |
-| [`tower`](#tower) | Tower release contract helpers for Dagger pipelines |
+| [`tower`](#tower) | Tower release and workflow contract builders for Dagger pipelines |
 
 ## Requirements
 
@@ -347,27 +347,78 @@ await dag.imageTags("https://s3.example.com").write("production", merged, access
 
 ### tower
 
-Build Tower release contract lines from Dagger pipelines. The module does not
-build, deploy, or call Tower APIs; it only emits the generic `tower.release.v1`
-stdout contract parsed by Tower after release steps.
+Build Tower release contract lines and repo-owned workflow specs from Dagger
+pipelines. The module does not build, deploy, or call Tower APIs; it emits the
+generic `tower.release.v1` and `tower.workflow.v1` contracts consumed by Tower.
 
 #### Emit a release contract line
 
 ```typescript
 const artifacts = [
-  JSON.parse(dag.tower().ociBundle("release", "oci://registry.example/app:2026.0610.001")),
-  JSON.parse(dag.tower().image("api", "registry.example/app-api@sha256:...")),
+  JSON.parse(await dag.tower().ociBundle("release", "oci://registry.example/app:2026.0610.001")),
+  JSON.parse(await dag.tower().image("api", "registry.example/app-api@sha256:...")),
 ];
 
 return dag.tower().emitRelease(
   JSON.stringify(artifacts),
-  sourceCommit,
-  "refs/heads/main",
-  "",
-  "release-stage-20260610",
-  JSON.stringify({ environment: "stage" }),
+  {
+    sourceCommit,
+    sourceRef: "refs/heads/main",
+    gitTag: "release-stage-20260610",
+    metadataJson: JSON.stringify({ environment: "stage" }),
+  },
 );
 ```
+
+#### Build typed workflow inputs and Dagger parameters
+
+Use the chainable builders when generating `tower.workflow.v1` specs. JSON
+Schema remains the wire contract consumed by Tower, but callers do not need to
+construct or parse it by hand.
+
+```typescript
+const tower = dag.tower();
+
+const paramsJson = await tower
+  .daggerParams()
+  .withInput("pg-versions", "pg_versions")
+  .withInput("mode", "mode")
+  .json();
+
+const inputs = tower
+  .inputSchema()
+  .withChoice("pg_versions", ["v17", "v18", "v17,v18"], {
+    title: "PostgreSQL versions",
+    defaultValue: "v17,v18",
+  })
+  .withChoice("mode", ["verify", "smoke", "e2e"], {
+    title: "Verification mode",
+    defaultValue: "verify",
+  })
+  .withString("official_sha_18", {
+    title: "PostgreSQL 18 commit",
+    pattern: "^[0-9a-fA-F]{40}$",
+  });
+
+const inputSchemaJson = await inputs.schemaJson();
+const defaultInputsJson = await inputs.defaultsJson();
+
+const stepJson = await tower.daggerStep("Verify candidate", "postgres candidate", {
+  paramsJson,
+});
+const stepsJson = await tower.appendWorkflowStep(await tower.emptyArray(), stepJson);
+return tower.workflow("postgres-candidate", "verify", stepsJson, {
+  inputSchemaJson,
+  defaultInputsJson,
+});
+```
+
+`withInput`, `withValue`, `withSecret`, `withSecretValue`, and
+`withConfigMap` cover Tower's Dagger parameter sources and delivery targets.
+Input builders cover strings, choices, booleans, integers, and numbers. The
+low-level `*Json` arguments remain the wire-format escape hatch for API-driven
+contracts; Tower's interactive UI intentionally accepts only its scalar schema
+subset.
 
 ## Module Structure
 
