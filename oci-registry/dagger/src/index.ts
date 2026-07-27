@@ -2,6 +2,7 @@ import {
   type Container,
   dag,
   type Directory,
+  type File,
   func,
   object,
   type Secret,
@@ -31,6 +32,17 @@ type RegistryCredentials = {
   username: string;
   password: string;
 };
+
+type ArtifactLayer = {
+  digest: string;
+  mediaType: string;
+};
+
+const DIRECTORY_LAYER_COMPRESSION = new Map<string, "gzip" | "tar">([
+  ["application/vnd.oci.image.layer.v1.tar+gzip", "gzip"],
+  ["application/vnd.cncf.flux.content.v1.tar+gzip", "gzip"],
+  ["application/vnd.oci.image.layer.v1.tar", "tar"],
+]);
 
 function dockerConfigHost(key: string): string {
   const trimmed = key.trim().replace(/\/+$/, "");
@@ -141,6 +153,47 @@ function validateMediaType(value: string, field: string): string {
     throw new Error(`${field} must be a valid media type`);
   }
   return normalized;
+}
+
+export function parseArtifactLayers(raw: string): ArtifactLayer[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("registry returned an invalid OCI manifest");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("registry returned an invalid OCI manifest");
+  }
+  const layers = (parsed as { layers?: unknown }).layers;
+  if (!Array.isArray(layers) || layers.length === 0) {
+    throw new Error("OCI artifact manifest has no layers");
+  }
+  return layers.map((layer, index) => {
+    if (typeof layer !== "object" || layer === null || Array.isArray(layer)) {
+      throw new Error(`OCI artifact layer ${index} is invalid`);
+    }
+    const descriptor = layer as { digest?: unknown; mediaType?: unknown };
+    if (
+      typeof descriptor.digest !== "string"
+      || !/^[a-z][a-z0-9_+.-]*:[a-f0-9]{32,}$/i.test(descriptor.digest)
+    ) {
+      throw new Error(`OCI artifact layer ${index} has an invalid digest`);
+    }
+    if (
+      typeof descriptor.mediaType !== "string"
+      || !DIRECTORY_LAYER_COMPRESSION.has(descriptor.mediaType)
+    ) {
+      throw new Error(
+        `OCI artifact layer ${index} has unsupported media type `
+        + `${JSON.stringify(descriptor.mediaType)}`,
+      );
+    }
+    return {
+      digest: descriptor.digest.toLowerCase(),
+      mediaType: descriptor.mediaType,
+    };
+  });
 }
 
 /**
@@ -472,25 +525,53 @@ export class OciRegistry {
     registryAuth: Secret,
   ): Promise<Directory> {
     const parsed = parseReference(reference);
-    const pulled = await this.retry(
-      `pull OCI artifact ${parsed.reference}`,
-      async (attempt) => {
-        const container = this.oras(registryAuth, attempt)
-          .withExec(["mkdir", "-p", "/workspace/output"])
-          .withExec([
-            "/bin/oras",
-            "pull",
-            "--registry-config",
-            DOCKER_CONFIG_PATH,
-            "--no-tty",
-            "--output",
-            "/workspace/output",
-            parsed.reference,
-          ]);
-        await container.sync();
-        return container;
-      },
+    const layers = parseArtifactLayers(
+      await this.readManifest(parsed.reference, registryAuth),
     );
-    return pulled.directory("/workspace/output");
+    let output = dag.directory();
+
+    for (const [index, layer] of layers.entries()) {
+      const path = `/workspace/layers/${index}.tar`;
+      const blobReference = `${parsed.registry}/${parsed.repository}@${layer.digest}`;
+      const archive = await this.retry<File>(
+        `pull OCI artifact layer ${layer.digest}`,
+        async (attempt) => {
+          const container = this.oras(registryAuth, attempt)
+            .withExec(["mkdir", "-p", "/workspace/layers"])
+            .withExec([
+              "/bin/oras",
+              "blob",
+              "fetch",
+              "--registry-config",
+              DOCKER_CONFIG_PATH,
+              "--no-tty",
+              "--output",
+              path,
+              blobReference,
+            ]);
+          await container.sync();
+          return container.file(path);
+        },
+      );
+      const compression = DIRECTORY_LAYER_COMPRESSION.get(layer.mediaType);
+      const tarFlag = compression === "gzip" ? "-xzf" : "-xf";
+      output = dag
+        .container()
+        .from(ORAS_IMAGE)
+        .withEntrypoint([])
+        .withDirectory("/workspace/output", output)
+        .withFile(path, archive)
+        .withExec([
+          "tar",
+          tarFlag,
+          path,
+          "-C",
+          "/workspace/output",
+          "--no-same-owner",
+        ])
+        .directory("/workspace/output");
+    }
+
+    return output;
   }
 }
