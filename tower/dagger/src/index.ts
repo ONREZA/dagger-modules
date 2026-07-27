@@ -47,6 +47,27 @@ function validateWorkflowName(name: string, field: string): string {
   return normalized;
 }
 
+function validateRegistryResourceName(name: string): string {
+  const normalized = requiredText(name, "registry");
+  if (!/^[a-z0-9][a-z0-9:-]*$/.test(normalized)) {
+    throw new Error("registry must match ^[a-z0-9][a-z0-9:-]*$");
+  }
+  return normalized;
+}
+
+function validateRegistryRepository(repository: string): string {
+  const normalized = requiredText(repository, "repository");
+  const valid =
+    normalized.length <= 255 &&
+    normalized
+      .split("/")
+      .every((segment) => /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(segment));
+  if (!valid) {
+    throw new Error("repository must be a lowercase OCI repository path");
+  }
+  return normalized;
+}
+
 function validateNumberOptions(
   kind: "integer" | "number",
   minimum?: number,
@@ -227,6 +248,42 @@ export class TowerInputSchema {
         ...(normalizedDescription ? { description: normalizedDescription } : {}),
         ...(normalizedPattern ? { pattern: normalizedPattern } : {}),
         ...(readOnly ? { readOnly: true } : {}),
+      }),
+      required,
+      defaultValue === undefined ? undefined : JSON.stringify(defaultValue),
+    );
+  }
+
+  /** Add a string input backed by Tower's global registry image selector. */
+  @func()
+  withRegistryImage(
+    name: string,
+    registry: string,
+    repository: string,
+    title = "",
+    description = "",
+    pattern = "",
+    required = false,
+    defaultValue?: string,
+  ): TowerInputSchema {
+    const normalizedRegistry = validateRegistryResourceName(registry);
+    const normalizedRepository = validateRegistryRepository(repository);
+    const normalizedTitle = optionalProperty(title);
+    const normalizedDescription = optionalProperty(description);
+    const normalizedPattern = optionalProperty(pattern);
+    validateStringPattern(normalizedPattern, defaultValue);
+    return this.withProperty(
+      name,
+      JSON.stringify({
+        type: "string",
+        ...(normalizedTitle ? { title: normalizedTitle } : {}),
+        ...(normalizedDescription ? { description: normalizedDescription } : {}),
+        ...(normalizedPattern ? { pattern: normalizedPattern } : {}),
+        "x-tower-selector": {
+          kind: "registry_image",
+          registry: normalizedRegistry,
+          repository: normalizedRepository,
+        },
       }),
       required,
       defaultValue === undefined ? undefined : JSON.stringify(defaultValue),

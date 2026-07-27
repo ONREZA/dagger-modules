@@ -398,6 +398,16 @@ const inputs = tower
   .withString("official_sha_18", {
     title: "PostgreSQL 18 commit",
     pattern: "^[0-9a-fA-F]{40}$",
+  })
+  .withRegistryImage(
+    "compute_image_18",
+    "kaiki-registry",
+    "kaiki/compute-node-v18",
+    {
+      title: "PostgreSQL 18 compute image",
+      pattern:
+        "^cr\\.selcloud\\.ru/kaiki/compute-node-v18@sha256:[0-9a-f]{64}$",
+    },
   });
 
 const inputSchemaJson = await inputs.schemaJson();
@@ -415,10 +425,13 @@ return tower.workflow("postgres-candidate", "verify", stepsJson, {
 
 `withInput`, `withValue`, `withSecret`, `withSecretValue`, and
 `withConfigMap` cover Tower's Dagger parameter sources and delivery targets.
-Input builders cover strings, choices, booleans, integers, and numbers. The
-low-level `*Json` arguments remain the wire-format escape hatch for API-driven
-contracts; Tower's interactive UI intentionally accepts only its scalar schema
-subset.
+Input builders cover strings, registry-backed immutable images, choices,
+booleans, integers, and numbers. A registry image selector names a global
+registry resource and repository; it does not grant the workflow access to the
+credential. Keep the matching `registry_credential` resource requirement
+explicit on the Dagger step that needs it. The low-level `*Json` arguments
+remain the wire-format escape hatch for API-driven contracts; Tower's
+interactive UI intentionally accepts only its scalar schema subset.
 
 ## Module Structure
 
