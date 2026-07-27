@@ -171,7 +171,9 @@ const config = await registry.readConfig(published, registryAuth);
 
 Directory artifacts use ORAS-compatible OCI manifests and configurable media
 types. `pushArtifact` returns a canonical digest reference; `pullArtifact`
-returns the extracted `Directory`.
+returns the extracted `Directory`. Pulling reads layer descriptors directly,
+so it also supports legacy Flux directory artifacts whose layers predate the
+`org.opencontainers.image.title` annotation.
 
 ---
 
