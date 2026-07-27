@@ -1,5 +1,4 @@
-import { type Container, type Directory, func, object, type Secret } from "@dagger.io/dagger";
-import { retryRegistryOperation } from "./registry-retry.js";
+import { type Container, dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
 
 function parseBuildArgs(buildArgs: string): { name: string; value: string }[] {
   const parsed: { name: string; value: string }[] = [];
@@ -56,8 +55,9 @@ export class ImageBuilder {
     const orgPrefix = organization ? `${organization}/` : "";
     const imageRef = `${this.registry}/${orgPrefix}${name}:${tag}`;
 
-    const authenticatedImage = image.withRegistryAuth(this.registry, registryUsername, registryPassword);
-    return retryRegistryOperation(`publish ${imageRef}`, () => authenticatedImage.publish(imageRef));
+    const registry = dag.ociRegistry();
+    const registryAuth = registry.authConfig(this.registry, registryUsername, registryPassword);
+    return registry.publishImage(image, imageRef, registryAuth);
   }
 
   /** Build and publish in one call for backward compatibility. */
