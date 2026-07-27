@@ -4,5 +4,11 @@
   "sdk": {
     "source": "typescript"
   },
+  "dependencies": [
+    {
+      "name": "oci-registry",
+      "source": "../oci-registry"
+    }
+  ],
   "source": "dagger"
 }

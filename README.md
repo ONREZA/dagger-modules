@@ -11,6 +11,7 @@ Built with the **TypeScript SDK** and the Dagger **Node** runtime. The
 |--------|-------------|
 | [`bun-builder`](#bun-builder) | Bun dependency install, frontend builds, standalone binary compilation |
 | [`cargo-builder`](#cargo-builder) | Rust/Cargo builds with persistent caching, SSH deps, workspace manifests |
+| [`oci-registry`](#oci-registry) | Atomic OCI image and artifact transport with retry policy |
 | [`image-builder`](#image-builder) | Docker image build + registry push with auth extraction |
 | [`change-detector`](#change-detector) | Git-diff change detection with glob patterns and dependency propagation |
 | [`image-tags`](#image-tags) | S3-backed image tag state management for deployment tracking |
@@ -127,6 +128,53 @@ dagger -m ./cargo-builder call build \
 
 ---
 
+### oci-registry
+
+Atomic OCI Distribution operations for images and directory artifacts. The
+module owns authentication, transport, error classification and bounded
+exponential retry with jitter. It does not own build, release, environment or
+application-specific validation policy.
+
+`retry-count` is the number of retries after the initial attempt and defaults
+to `3`. Authentication and malformed-reference errors fail immediately;
+timeouts, connection resets, HTTP/2 stream failures, `429` and `5xx` responses
+are retried.
+
+```bash
+# Validate every remote layer behind an immutable image reference.
+dagger -m ./oci-registry call \
+  --retry-count=3 \
+  validate-layers \
+    --reference=ghcr.io/example/app@sha256:... \
+    --registry-auth=file:~/.docker/config.json
+
+# Read an image config or resolve a tag to a digest.
+dagger -m ./oci-registry call read-config \
+  --reference=ghcr.io/example/app:v1 \
+  --registry-auth=file:~/.docker/config.json
+
+dagger -m ./oci-registry call resolve-digest \
+  --reference=ghcr.io/example/app:v1 \
+  --registry-auth=file:~/.docker/config.json
+```
+
+Composable pipelines call the concrete operations independently:
+
+```typescript
+const registry = dag.ociRegistry({ retryCount: 3 });
+const published = await registry.publishImage(image, taggedRef, registryAuth);
+await registry.validateLayers(published, registryAuth, {
+  retryNotFound: true,
+});
+const config = await registry.readConfig(published, registryAuth);
+```
+
+Directory artifacts use ORAS-compatible OCI manifests and configurable media
+types. `pushArtifact` returns a canonical digest reference; `pullArtifact`
+returns the extracted `Directory`.
+
+---
+
 ### image-builder
 
 Build Docker images and push them to any container registry. Registry credentials are passed explicitly so the module never parses or logs dockerconfigjson secrets.
@@ -165,9 +213,10 @@ dagger -m ./image-builder call \
 
 `build` returns a pure `Container`; `publish` is marked `cache: never`. This
 lets callers evaluate independent Docker builds concurrently and serialize only
-registry pushes. `publish` retries transient registry/network failures up to four
-times with bounded exponential backoff and jitter. Authentication, invalid
-reference and invalid manifest errors fail immediately:
+registry pushes. `publish` delegates transport to `oci-registry`, which retries
+transient registry/network failures three times after the initial attempt with
+bounded exponential backoff and jitter. Authentication, invalid reference and
+invalid manifest errors fail immediately:
 
 ```typescript
 const builder = dag.imageBuilder({ registry: "ghcr.io" });
@@ -320,8 +369,9 @@ These modules are designed to be used together. A typical CI pipeline:
 1. **change-detector** determines which services changed
 2. **bun-builder** installs deps and builds frontend/binaries
 3. **cargo-builder** compiles Rust services
-4. **image-builder** builds Docker images and pushes to registry
-5. **image-tags** updates the deployment state in S3
+4. **image-builder** builds Docker images
+5. **oci-registry** publishes and validates OCI content
+6. **image-tags** updates the deployment state in S3
 
 ```typescript
 // Example: using as Dagger module dependencies in your pipeline
