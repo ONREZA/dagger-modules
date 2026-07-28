@@ -60,7 +60,17 @@ export function retryPolicy(
 }
 
 export function registryErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const execError = error as Error & {
+    stdout?: unknown;
+    stderr?: unknown;
+  };
+  return [error.message, execError.stdout, execError.stderr]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
 }
 
 export function isRetryableRegistryError(
