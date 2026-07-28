@@ -209,9 +209,9 @@ export class OciRegistry {
     /** Number of retries after the initial attempt. */
     retryCount = 3,
     /** Initial exponential-backoff delay in milliseconds. */
-    baseDelayMs = 5_000,
+    baseDelayMs = 5000,
     /** Maximum exponential-backoff delay in milliseconds. */
-    maxDelayMs = 30_000,
+    maxDelayMs = 30000,
   ) {
     const policy = retryPolicy(retryCount, baseDelayMs, maxDelayMs);
     this.retryCount = policy.retryCount;
@@ -420,7 +420,7 @@ export class OciRegistry {
   }
 
   /**
-   * Verify that a manifest and every referenced remote blob are readable.
+   * Verify manifest/config integrity and that every referenced remote layer exists.
    */
   @func({ cache: "never" })
   async validateLayers(
@@ -433,7 +433,7 @@ export class OciRegistry {
       `validate layers ${parsed.reference}`,
       (attempt) =>
         this.crane(registryAuth, attempt)
-          .withExec(["crane", "validate", "--remote", parsed.reference])
+          .withExec(["crane", "validate", "--fast", "--remote", parsed.reference])
           .sync(),
       retryNotFound,
     );

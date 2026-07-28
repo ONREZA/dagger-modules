@@ -141,7 +141,7 @@ timeouts, connection resets, HTTP/2 stream failures, `429` and `5xx` responses
 are retried.
 
 ```bash
-# Validate every remote layer behind an immutable image reference.
+# Validate manifest/config integrity and remote layer existence.
 dagger -m ./oci-registry call \
   --retry-count=3 \
   validate-layers \
