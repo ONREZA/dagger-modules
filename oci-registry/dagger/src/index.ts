@@ -225,6 +225,7 @@ export class OciRegistry {
       .from(CRANE_IMAGE)
       .withUser("root")
       .withMountedSecret(DOCKER_CONFIG_PATH, registryAuth, { mode: 0o400 })
+      .withEnvVariable("_OCI_REGISTRY_REQUEST", globalThis.crypto.randomUUID())
       .withEnvVariable("_OCI_REGISTRY_ATTEMPT", String(attempt));
   }
 
@@ -235,6 +236,7 @@ export class OciRegistry {
       .withEntrypoint([])
       .withUser("root")
       .withMountedSecret(DOCKER_CONFIG_PATH, registryAuth, { mode: 0o400 })
+      .withEnvVariable("_OCI_REGISTRY_REQUEST", globalThis.crypto.randomUUID())
       .withEnvVariable("_OCI_REGISTRY_ATTEMPT", String(attempt));
   }
 
