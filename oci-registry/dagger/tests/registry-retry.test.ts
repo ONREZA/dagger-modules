@@ -34,6 +34,33 @@ describe("OCI registry retries", () => {
     expect(delays).toEqual([5_000, 10_000, 20_000]);
   });
 
+  test("retries failures reported in Dagger ExecError output", async () => {
+    let calls = 0;
+    const result = await retryRegistryOperation(
+      "validate layers",
+      async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new Error("process exited with code 1"), {
+            stdout: "FAIL: validating layers: 502 Bad Gateway",
+            stderr: "",
+          });
+        }
+        return "PASS";
+      },
+      retryPolicy(3, 5_000, 30_000),
+      false,
+      {
+        random: () => 1,
+        sleep: async () => {},
+        warn: () => {},
+      },
+    );
+
+    expect(result).toBe("PASS");
+    expect(calls).toBe(2);
+  });
+
   test("classifies operation-aware registry failures", () => {
     expect(isRetryableRegistryError(new Error("HTTP 503 Service Unavailable"))).toBeTrue();
     expect(isRetryableRegistryError(new Error("TLS handshake timeout"))).toBeTrue();
