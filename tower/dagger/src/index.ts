@@ -1,12 +1,13 @@
 import { func, object } from "@dagger.io/dagger";
 
 const RELEASE_SCHEMA = "tower.release.v1";
-const WORKFLOW_SCHEMA = "tower.workflow.v1";
+const WORKFLOW_SCHEMA = "tower.workflow.v2";
 const CONTRACT_PREFIX = `${RELEASE_SCHEMA}: `;
 const ARTIFACT_KINDS = new Set(["oci_bundle", "image", "manifest", "metadata", "other"]);
 const WORKFLOW_KINDS = new Set(["ci", "release", "smoke", "verify", "promote", "maintenance"]);
 const WORKFLOW_STEP_TYPES = new Set(["dagger_call", "flux_wait", "smoke", "approval", "manual", "webhook"]);
 const WORKFLOW_CONCURRENCY_POLICIES = new Set(["environment", "repository"]);
+const WORKFLOW_TARGET_SCOPES = new Set(["environment", "repository"]);
 const USER_ROLES = new Set(["viewer", "operator", "release_manager", "admin"]);
 const MAX_I32 = 2_147_483_647;
 
@@ -486,6 +487,7 @@ type WorkflowProfile = {
   resource_requirements?: JsonObject[];
   runner_profile?: string;
   timeout_seconds?: number;
+  target_scope: string;
   concurrency_policy?: string;
   allowed_environments?: string[];
   steps: WorkflowStep[];
@@ -800,6 +802,11 @@ function normalizeWorkflowStep(step: Partial<WorkflowStep>, field: string): Work
 function normalizeWorkflow(workflow: Partial<WorkflowProfile>, field: string): WorkflowProfile {
   const name = validateWorkflowName(String(workflow.name ?? ""), `${field}.name`);
   const kind = requiredEnum(String(workflow.kind ?? ""), `${field}.kind`, WORKFLOW_KINDS);
+  const targetScope = requiredEnum(
+    String(workflow.target_scope ?? ""),
+    `${field}.target_scope`,
+    WORKFLOW_TARGET_SCOPES,
+  );
   const steps = (workflow.steps ?? []).map((step, index) => normalizeWorkflowStep(step, `${field}.steps[${index}]`));
   if (steps.length === 0) {
     throw new Error(`${field}.steps must contain at least one step`);
@@ -822,10 +829,36 @@ function normalizeWorkflow(workflow: Partial<WorkflowProfile>, field: string): W
     typeof workflow.timeout_seconds === "number"
       ? positiveInt(workflow.timeout_seconds, `${field}.timeout_seconds`)
       : undefined;
+  if (targetScope === "repository") {
+    if (kind === "release" || kind === "promote") {
+      throw new Error(`${field} with target_scope repository must not use ${kind} kind`);
+    }
+    if (concurrencyPolicy !== "repository") {
+      throw new Error(
+        `${field} with target_scope repository must use concurrency_policy repository`,
+      );
+    }
+    if (workflow.allowed_environments && workflow.allowed_environments.length > 0) {
+      throw new Error(
+        `${field} with target_scope repository must not set allowed_environments`,
+      );
+    }
+    for (const step of steps) {
+      if (step.step_type === "flux_wait") {
+        throw new Error(`${field} with target_scope repository must not contain flux_wait steps`);
+      }
+      if (step.dagger_command?.includes("{{environment}}")) {
+        throw new Error(
+          `${field} step ${JSON.stringify(step.name)} must not reference {{environment}}`,
+        );
+      }
+    }
+  }
 
   return {
     name,
     kind,
+    target_scope: targetScope,
     steps,
     ...(displayName ? { display_name: displayName } : {}),
     ...(workflow.enabled === false ? { enabled: false } : {}),
@@ -1152,6 +1185,7 @@ export class Tower {
     name: string,
     kind: string,
     stepsJson: string,
+    targetScope: string,
     displayName = "",
     enabled = true,
     daggerModule = "",
@@ -1169,6 +1203,7 @@ export class Tower {
         {
           name,
           kind,
+          target_scope: targetScope,
           display_name: optional(displayName),
           enabled,
           dagger_module: optional(daggerModule),

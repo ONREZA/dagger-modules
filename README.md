@@ -329,7 +329,7 @@ if (parsed.services.api) {
 
 Build Tower release contract lines and repo-owned workflow specs from Dagger
 pipelines. The module does not build, deploy, or call Tower APIs; it emits the
-generic `tower.release.v1` and `tower.workflow.v1` contracts consumed by Tower.
+generic `tower.release.v1` and `tower.workflow.v2` contracts consumed by Tower.
 
 #### Emit a release contract line
 
@@ -352,7 +352,7 @@ return dag.tower().emitRelease(
 
 #### Build typed workflow inputs and Dagger parameters
 
-Use the chainable builders when generating `tower.workflow.v1` specs. JSON
+Use the chainable builders when generating `tower.workflow.v2` specs. JSON
 Schema remains the wire contract consumed by Tower, but callers do not need to
 construct or parse it by hand.
 
@@ -397,7 +397,7 @@ const stepJson = await tower.daggerStep("Verify candidate", "postgres candidate"
   paramsJson,
 });
 const stepsJson = await tower.appendWorkflowStep(await tower.emptyArray(), stepJson);
-return tower.workflow("postgres-candidate", "verify", stepsJson, {
+return tower.workflow("postgres-candidate", "verify", stepsJson, "environment", {
   inputSchemaJson,
   defaultInputsJson,
 });
@@ -412,8 +412,12 @@ credential. Keep the matching `registry_credential` resource requirement
 explicit on the Dagger step that needs it. The low-level `*Json` arguments
 remain the wire-format escape hatch for API-driven contracts; Tower's
 interactive UI intentionally accepts only its scalar schema subset.
-Workflow concurrency accepts `environment` for per-environment serialization
-or `repository` for repository-wide exclusive maintenance.
+Every workflow declares `target_scope`. Use `environment` for workflows launched
+against stage/production, or `repository` for one repository-level maintenance
+action without an environment. Repository targets require repository concurrency,
+cannot use release/promote or `flux_wait`, and cannot reference
+`{{environment}}`. Concurrency remains a safety lock; runner profile concurrency
+limits remain capacity controls.
 
 ## Module Structure
 
