@@ -55,6 +55,19 @@ function installCaCertificates(ctr: Container, image: string): Container {
   ]);
 }
 
+function imageContainer(
+  image: string,
+  registryAddress: string,
+  registryUsername: string,
+  registryPassword?: Secret,
+): Container {
+  if (!registryPassword) return dag.container().from(image);
+  if (!registryAddress || !registryUsername) {
+    throw new Error("registryAddress and registryUsername are required with registryPassword");
+  }
+  return dag.container().withRegistryAuth(registryAddress, registryUsername, registryPassword).from(image);
+}
+
 function validatePackageName(pkg: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(pkg)) {
     throw new Error(`Invalid Bun package build name: ${pkg}`);
@@ -95,14 +108,15 @@ export class BunBuilder {
     bunImage: string = DEFAULT_BUN_IMAGE,
     installCache?: CacheVolume,
     cacheSharing: string = "locked",
+    registryAddress: string = "",
+    registryUsername: string = "",
+    registryPassword?: Secret,
   ): Promise<Directory> {
     const dependencyInput = source.filter({
       include: ["package.json", "bun.lock", "bunfig.toml", "**/package.json", "**/bunfig.toml"],
       exclude: ["**/node_modules/**"],
     });
-    const installed = dag
-      .container()
-      .from(bunImage)
+    const installed = imageContainer(bunImage, registryAddress, registryUsername, registryPassword)
       .withDirectory("/app", dependencyInput)
       .withWorkdir("/app")
       .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {
@@ -140,14 +154,20 @@ export class BunBuilder {
     sentryToken?: Secret,
     installCache?: CacheVolume,
     cacheSharing: string = "private",
+    systemPackagesInstalled: boolean = false,
+    registryAddress: string = "",
+    registryUsername: string = "",
+    registryPassword?: Secret,
   ): Promise<Directory> {
     validatePackageName(pkg);
     const envVars = parseEnvironmentVariables(envVarsJson);
 
-    let ctr = dag.container().from(bunImage);
+    let ctr = imageContainer(bunImage, registryAddress, registryUsername, registryPassword);
 
     const sharing = cacheSharingMode(cacheSharing);
-    ctr = installCaCertificates(withPackageManagerCache(ctr, bunImage, "bun-ca-certificates", sharing), bunImage);
+    if (!systemPackagesInstalled) {
+      ctr = installCaCertificates(withPackageManagerCache(ctr, bunImage, "bun-ca-certificates", sharing), bunImage);
+    }
 
     ctr = ctr
       .withMountedDirectory("/app", source)
@@ -198,11 +218,12 @@ export class BunBuilder {
     bunImage: string = DEFAULT_BUN_IMAGE,
     installCache?: CacheVolume,
     cacheSharing: string = "private",
+    registryAddress: string = "",
+    registryUsername: string = "",
+    registryPassword?: Secret,
   ): Promise<Directory> {
     validatePackageName(pkg);
-    let ctr = dag
-      .container()
-      .from(bunImage)
+    let ctr = imageContainer(bunImage, registryAddress, registryUsername, registryPassword)
       .withMountedDirectory("/app", source)
       .withWorkdir("/app")
       .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {

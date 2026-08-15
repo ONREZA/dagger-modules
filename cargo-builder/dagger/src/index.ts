@@ -61,6 +61,19 @@ function installSystemPackages(ctr: Container, buildImage: string, packages: str
   ]);
 }
 
+function imageContainer(
+  image: string,
+  registryAddress: string,
+  registryUsername: string,
+  registryPassword?: Secret,
+): Container {
+  if (!registryPassword) return dag.container().from(image);
+  if (!registryAddress || !registryUsername) {
+    throw new Error("registryAddress and registryUsername are required with registryPassword");
+  }
+  return dag.container().withRegistryAuth(registryAddress, registryUsername, registryPassword).from(image);
+}
+
 function validateBuildInputs(
   targets: string[],
   cacheId: string,
@@ -141,9 +154,16 @@ export class CargoBuilder {
     gitCache?: CacheVolume,
     targetCache?: CacheVolume,
     cacheSharing: string = "locked",
+    systemPackagesInstalled: boolean = false,
+    registryAddress: string = "",
+    registryUsername: string = "",
+    registryPassword?: Secret,
   ): Promise<Directory> {
+    if (systemPackagesInstalled && extraPackages.trim()) {
+      throw new Error("extraPackages must be empty when systemPackagesInstalled is true");
+    }
     const packageSet = new Set(extraPackages.split(/\s+/).filter(Boolean));
-    if (sshKey) {
+    if (sshKey && !systemPackagesInstalled) {
       packageSet.add("git");
       packageSet.add("git-lfs");
       packageSet.add("openssh-client");
@@ -155,9 +175,7 @@ export class CargoBuilder {
     validateBuildInputs(targetList, cacheId, [...packageSet], workspaceManifest, sshHost, sshPort);
 
     const sharing = cacheSharingMode(cacheSharing);
-    let ctr = dag
-      .container()
-      .from(buildImage)
+    let ctr = imageContainer(buildImage, registryAddress, registryUsername, registryPassword)
       // Persistent cargo cache volumes
       .withMountedCache("/cargo-cache/registry", registryCache ?? dag.cacheVolume(`cargo-registry-${cacheId}`), {
         sharing,
@@ -167,7 +185,9 @@ export class CargoBuilder {
       .withEnvVariable("CARGO_HOME", "/cargo-cache")
       .withEnvVariable("CARGO_TARGET_DIR", "/cargo-cache/target");
 
-    ctr = withPackageManagerCache(ctr, buildImage, cacheId, sharing);
+    if (!systemPackagesInstalled) {
+      ctr = withPackageManagerCache(ctr, buildImage, cacheId, sharing);
+    }
 
     // Bind database service for sqlx compile-time verification
     if (dbService) {
