@@ -6,6 +6,7 @@ const CONTRACT_PREFIX = `${RELEASE_SCHEMA}: `;
 const ARTIFACT_KINDS = new Set(["oci_bundle", "image", "manifest", "metadata", "other"]);
 const WORKFLOW_KINDS = new Set(["ci", "release", "smoke", "verify", "promote", "maintenance"]);
 const WORKFLOW_STEP_TYPES = new Set(["dagger_call", "flux_wait", "smoke", "approval", "manual", "webhook"]);
+const WORKFLOW_CONCURRENCY_POLICIES = new Set(["environment"]);
 const USER_ROLES = new Set(["viewer", "operator", "release_manager", "admin"]);
 const MAX_I32 = 2_147_483_647;
 
@@ -813,7 +814,10 @@ function normalizeWorkflow(workflow: Partial<WorkflowProfile>, field: string): W
   const displayName = optional(String(workflow.display_name ?? ""));
   const daggerModule = optional(String(workflow.dagger_module ?? ""));
   const runnerProfile = optional(String(workflow.runner_profile ?? ""));
-  const concurrencyPolicy = optional(String(workflow.concurrency_policy ?? ""));
+  const rawConcurrencyPolicy = optional(String(workflow.concurrency_policy ?? ""));
+  const concurrencyPolicy = rawConcurrencyPolicy
+    ? requiredEnum(rawConcurrencyPolicy, `${field}.concurrency_policy`, WORKFLOW_CONCURRENCY_POLICIES)
+    : undefined;
   const timeoutSeconds =
     typeof workflow.timeout_seconds === "number"
       ? positiveInt(workflow.timeout_seconds, `${field}.timeout_seconds`)
