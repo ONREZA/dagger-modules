@@ -412,6 +412,8 @@ credential. Keep the matching `registry_credential` resource requirement
 explicit on the Dagger step that needs it. The low-level `*Json` arguments
 remain the wire-format escape hatch for API-driven contracts; Tower's
 interactive UI intentionally accepts only its scalar schema subset.
+Workflow concurrency accepts `environment` for per-environment serialization
+or `repository` for repository-wide exclusive maintenance.
 
 ## Module Structure
 

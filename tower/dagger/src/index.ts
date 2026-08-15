@@ -6,7 +6,7 @@ const CONTRACT_PREFIX = `${RELEASE_SCHEMA}: `;
 const ARTIFACT_KINDS = new Set(["oci_bundle", "image", "manifest", "metadata", "other"]);
 const WORKFLOW_KINDS = new Set(["ci", "release", "smoke", "verify", "promote", "maintenance"]);
 const WORKFLOW_STEP_TYPES = new Set(["dagger_call", "flux_wait", "smoke", "approval", "manual", "webhook"]);
-const WORKFLOW_CONCURRENCY_POLICIES = new Set(["environment"]);
+const WORKFLOW_CONCURRENCY_POLICIES = new Set(["environment", "repository"]);
 const USER_ROLES = new Set(["viewer", "operator", "release_manager", "admin"]);
 const MAX_I32 = 2_147_483_647;
 
