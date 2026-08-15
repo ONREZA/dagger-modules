@@ -1,9 +1,0 @@
-{
-  "type": "module",
-  "dependencies": {
-    "typescript": "5.9.3"
-  },
-  "dagger": {
-    "runtime": "node"
-  }
-}

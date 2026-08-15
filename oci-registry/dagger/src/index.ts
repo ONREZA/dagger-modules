@@ -219,24 +219,26 @@ export class OciRegistry {
     this.maxDelayMs = policy.maxDelayMs;
   }
 
-  private crane(registryAuth: Secret, attempt: number): Container {
+  private async crane(registryAuth: Secret, attempt: number): Promise<Container> {
+    const requestId = await dag.currentFunctionCall().id();
     return dag
       .container()
       .from(CRANE_IMAGE)
       .withUser("root")
       .withMountedSecret(DOCKER_CONFIG_PATH, registryAuth, { mode: 0o400 })
-      .withEnvVariable("_OCI_REGISTRY_REQUEST", globalThis.crypto.randomUUID())
+      .withEnvVariable("_OCI_REGISTRY_REQUEST", requestId)
       .withEnvVariable("_OCI_REGISTRY_ATTEMPT", String(attempt));
   }
 
-  private oras(registryAuth: Secret, attempt: number): Container {
+  private async oras(registryAuth: Secret, attempt: number): Promise<Container> {
+    const requestId = await dag.currentFunctionCall().id();
     return dag
       .container()
       .from(ORAS_IMAGE)
       .withEntrypoint([])
       .withUser("root")
       .withMountedSecret(DOCKER_CONFIG_PATH, registryAuth, { mode: 0o400 })
-      .withEnvVariable("_OCI_REGISTRY_REQUEST", globalThis.crypto.randomUUID())
+      .withEnvVariable("_OCI_REGISTRY_REQUEST", requestId)
       .withEnvVariable("_OCI_REGISTRY_ATTEMPT", String(attempt));
   }
 
@@ -353,8 +355,8 @@ export class OciRegistry {
   ): Promise<string> {
     const parsed = parseReference(reference);
     const digest = (
-      await this.retry(`resolve digest ${parsed.reference}`, (attempt) =>
-        this.crane(registryAuth, attempt)
+      await this.retry(`resolve digest ${parsed.reference}`, async (attempt) =>
+        (await this.crane(registryAuth, attempt))
           .withExec(["crane", "digest", parsed.reference])
           .stdout())
     ).trim().toLowerCase();
@@ -374,8 +376,8 @@ export class OciRegistry {
   ): Promise<string> {
     const parsed = parseReference(reference);
     const raw = (
-      await this.retry(`read manifest ${parsed.reference}`, (attempt) =>
-        this.crane(registryAuth, attempt)
+      await this.retry(`read manifest ${parsed.reference}`, async (attempt) =>
+        (await this.crane(registryAuth, attempt))
           .withExec(["crane", "manifest", parsed.reference])
           .stdout())
     ).trim();
@@ -393,8 +395,8 @@ export class OciRegistry {
   ): Promise<string> {
     const parsed = parseReference(reference);
     const raw = (
-      await this.retry(`read config ${parsed.reference}`, (attempt) =>
-        this.crane(registryAuth, attempt)
+      await this.retry(`read config ${parsed.reference}`, async (attempt) =>
+        (await this.crane(registryAuth, attempt))
           .withExec(["crane", "config", parsed.reference])
           .stdout())
     ).trim();
@@ -413,8 +415,8 @@ export class OciRegistry {
     const parsed = parseReference(repository, true);
     const raw = await this.retry(
       `list tags ${parsed.reference}`,
-      (attempt) =>
-        this.crane(registryAuth, attempt)
+      async (attempt) =>
+        (await this.crane(registryAuth, attempt))
           .withExec(["crane", "ls", parsed.reference])
           .stdout(),
     );
@@ -433,8 +435,8 @@ export class OciRegistry {
     const parsed = parseReference(reference);
     await this.retry(
       `validate layers ${parsed.reference}`,
-      (attempt) =>
-        this.crane(registryAuth, attempt)
+      async (attempt) =>
+        (await this.crane(registryAuth, attempt))
           .withExec(["crane", "validate", "--fast", "--remote", parsed.reference])
           .sync(),
       retryNotFound,
@@ -455,8 +457,8 @@ export class OciRegistry {
     const destinationRef = assertPushReference(destination);
     await this.retry(
       `copy ${sourceRef.reference} to ${destinationRef.reference}`,
-      (attempt) =>
-        this.crane(registryAuth, attempt)
+      async (attempt) =>
+        (await this.crane(registryAuth, attempt))
           .withExec(["crane", "cp", sourceRef.reference, destinationRef.reference])
           .sync(),
     );
@@ -487,7 +489,7 @@ export class OciRegistry {
     const annotations = normalizedAnnotations(annotationsJson);
 
     const digest = (
-      await this.retry(`push OCI artifact ${parsed.reference}`, (attempt) => {
+      await this.retry(`push OCI artifact ${parsed.reference}`, async (attempt) => {
         const args = [
           "/bin/oras",
           "push",
@@ -506,7 +508,7 @@ export class OciRegistry {
           args.push("--annotation-file", "/workspace/annotations.json");
         }
         args.push(parsed.reference, `.:${normalizedLayerType}`);
-        return this.oras(registryAuth, attempt)
+        return (await this.oras(registryAuth, attempt))
           .withDirectory("/workspace/content", content)
           .withNewFile("/workspace/annotations.json", annotations)
           .withWorkdir("/workspace/content")
@@ -538,7 +540,7 @@ export class OciRegistry {
       const archive = await this.retry<File>(
         `pull OCI artifact layer ${layer.digest}`,
         async (attempt) => {
-          const container = this.oras(registryAuth, attempt)
+          const container = (await this.oras(registryAuth, attempt))
             .withExec(["mkdir", "-p", "/workspace/layers"])
             .withExec([
               "/bin/oras",

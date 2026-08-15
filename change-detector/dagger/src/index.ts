@@ -1,8 +1,6 @@
-import { argument, dag, type Directory, func, object, type Secret } from "@dagger.io/dagger";
+import { type Directory, dag, func, object } from "@dagger.io/dagger";
 
-const SHELL = "sh";
-const CRANE_IMAGE = "gcr.io/go-containerregistry/crane:debug@sha256:22de5fee4326edae01a568c5a53b69c755901c5f5aa1c06a7c907bef18937356";
-const GIT_IMAGE = "alpine/git:2.54.0";
+const GIT_IMAGE = "alpine/git:2.54.0@sha256:3b44767883ac77bddae0160cc27b6b039345e23fa3504f4159efaa32264ab57f";
 
 interface ServiceDef {
   name: string;
@@ -51,7 +49,7 @@ export interface DetailedChangeDetectionResult {
  * Compares HEAD against the last tag matching a given prefix to determine
  * which services and dependency groups have changed. Supports glob-based
  * path matching, cross-service dependency propagation, version file reading,
- * and CalVer version generation.
+ * and explicit base refs for deterministic comparisons.
  */
 @object()
 export class ChangeDetector {
@@ -71,21 +69,6 @@ export class ChangeDetector {
    */
   @func()
   async detect(
-    @argument({
-      ignore: [
-        "target",
-        "**/target",
-        "node_modules",
-        "**/node_modules",
-        "dist",
-        "**/dist",
-        "out",
-        "**/out",
-        ".private",
-        ".cache",
-        "**/.cache",
-      ],
-    })
     source: Directory,
     tagPrefix: string,
     forceAll: boolean = false,
@@ -105,21 +88,6 @@ export class ChangeDetector {
    */
   @func()
   async explain(
-    @argument({
-      ignore: [
-        "target",
-        "**/target",
-        "node_modules",
-        "**/node_modules",
-        "dist",
-        "**/dist",
-        "out",
-        "**/out",
-        ".private",
-        ".cache",
-        "**/.cache",
-      ],
-    })
     source: Directory,
     tagPrefix: string,
     forceAll: boolean = false,
@@ -143,21 +111,6 @@ export class ChangeDetector {
    */
   @func()
   async readVersionFile(
-    @argument({
-      ignore: [
-        "target",
-        "**/target",
-        "node_modules",
-        "**/node_modules",
-        "dist",
-        "**/dist",
-        "out",
-        "**/out",
-        ".private",
-        ".cache",
-        "**/.cache",
-      ],
-    })
     source: Directory,
     filePath: string = ".bun-version",
     defaultVersion: string = "1",
@@ -168,67 +121,6 @@ export class ChangeDetector {
     } catch {
       return defaultVersion;
     }
-  }
-
-  /**
-   * Generate a CalVer bundle version by querying an OCI registry for existing tags.
-   *
-   * Format: `vYYYY.MMDD.NNN` (e.g., `v2026.0302.001`). Automatically increments
-   * the sequence number to avoid collisions with existing tags.
-   *
-   * @param registry - Container registry URL (e.g., "ghcr.io")
-   * @param repo - Repository path (e.g., "my-org/release-production")
-   * @param registryAuth - Docker registry auth (dockerconfigjson format)
-   */
-  @func({ cache: "never" })
-  async generateCalver(
-    registry: string,
-    repo: string,
-    registryAuth: Secret,
-  ): Promise<string> {
-    const craneCtr = dag
-      .container()
-      .from(CRANE_IMAGE)
-      .withUser("root")
-      .withMountedSecret("/root/.docker/config.json", registryAuth, { mode: 0o400 });
-
-    const now = new Date();
-    const year = now.getUTCFullYear();
-    const mmdd = `${String(now.getUTCMonth() + 1).padStart(2, "0")}${String(now.getUTCDate()).padStart(2, "0")}`;
-    const datePrefix = `v${year}.${mmdd}`;
-    const versionPattern = /^v\d{4}\.\d{4}\.\d{3}$/;
-
-    const existingRaw = await craneCtr.withExec([SHELL, "-c", `crane ls "${registry}/${repo}"`]).stdout();
-
-    const existing = existingRaw.trim().split("\n").filter(Boolean);
-    const todayTags = existing.filter((t) => t.startsWith(datePrefix) && versionPattern.test(t)).sort();
-    const lastSeqStr = todayTags.at(-1)?.split(".").at(-1);
-    const baseSeq = lastSeqStr ? Number(lastSeqStr) + 1 : 1;
-
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const version = `${datePrefix}.${String(baseSeq + attempt).padStart(3, "0")}`;
-      const checkResult = (
-        await craneCtr
-          .withExec([
-            SHELL,
-            "-c",
-            [
-              `if crane manifest "${registry}/${repo}:${version}" >/dev/null 2>/tmp/crane-manifest.err; then`,
-              '  echo "exists"',
-              "elif grep -Eiq '(manifest unknown|manifest_unknown|name unknown|name_unknown|not found|404)' /tmp/crane-manifest.err; then",
-              '  echo "free"',
-              "else",
-              "  cat /tmp/crane-manifest.err >&2",
-              "  exit 1",
-              "fi",
-            ].join("\n"),
-          ])
-          .stdout()
-      ).trim();
-      if (checkResult === "free") return version;
-    }
-
-    throw new Error(`Failed to generate unique CalVer version after 10 attempts (prefix: ${datePrefix})`);
   }
 }
 
@@ -254,7 +146,10 @@ async function detectChangesFromGit(
   const commitSha = (await gitCtr.withExec(["git", "rev-parse", "HEAD"]).stdout()).trim();
   const shortSha = commitSha.slice(0, 8);
   const timestamp = (
-    await gitCtr.withExec(["git", "log", "-1", "--format=%cd", "--date=format:%Y%m%d-%H%M%S", commitSha]).stdout()
+    await gitCtr
+      .withEnvVariable("TZ", "UTC")
+      .withExec(["git", "log", "-1", "--format=%cd", "--date=format-local:%Y%m%d-%H%M%S", commitSha])
+      .stdout()
   ).trim();
 
   const lastTag = forceAll
@@ -267,7 +162,12 @@ async function detectChangesFromGit(
   }
 
   const changedFiles = await listChangedFiles(gitCtr, lastTag);
-  return detectChangesForFiles(changedFiles, services, groups, { commitSha, shortSha, timestamp, lastTag });
+  return detectChangesForFiles(changedFiles, services, groups, {
+    commitSha,
+    shortSha,
+    timestamp,
+    lastTag,
+  });
 }
 
 export function detectChangesForFiles(

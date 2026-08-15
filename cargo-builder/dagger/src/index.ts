@@ -1,9 +1,9 @@
 import {
-  type CacheVolume,
   CacheSharingMode,
+  type CacheVolume,
   type Container,
-  dag,
   type Directory,
+  dag,
   func,
   object,
   type Secret,
@@ -29,12 +29,17 @@ function isAlpineImage(image: string): boolean {
   return image.includes("alpine");
 }
 
-function withPackageManagerCache(ctr: Container, buildImage: string, cacheId: string): Container {
+function withPackageManagerCache(
+  ctr: Container,
+  buildImage: string,
+  cacheId: string,
+  sharing: CacheSharingMode,
+): Container {
   if (isAlpineImage(buildImage)) {
-    return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`));
+    return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`), { sharing });
   }
 
-  return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`));
+  return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`), { sharing });
 }
 
 function installSystemPackages(ctr: Container, buildImage: string, packages: string[]): Container {
@@ -135,7 +140,7 @@ export class CargoBuilder {
     registryCache?: CacheVolume,
     gitCache?: CacheVolume,
     targetCache?: CacheVolume,
-    cacheSharing: string = "shared",
+    cacheSharing: string = "locked",
   ): Promise<Directory> {
     const packageSet = new Set(extraPackages.split(/\s+/).filter(Boolean));
     if (sshKey) {
@@ -162,7 +167,7 @@ export class CargoBuilder {
       .withEnvVariable("CARGO_HOME", "/cargo-cache")
       .withEnvVariable("CARGO_TARGET_DIR", "/cargo-cache/target");
 
-    ctr = withPackageManagerCache(ctr, buildImage, cacheId);
+    ctr = withPackageManagerCache(ctr, buildImage, cacheId, sharing);
 
     // Bind database service for sqlx compile-time verification
     if (dbService) {

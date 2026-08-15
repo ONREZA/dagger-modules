@@ -14,7 +14,6 @@ Built with the **TypeScript SDK** and the Dagger **Node** runtime. The
 | [`oci-registry`](#oci-registry) | Atomic OCI image and artifact transport with retry policy |
 | [`image-builder`](#image-builder) | Docker image build + registry push with auth extraction |
 | [`change-detector`](#change-detector) | Git-diff change detection with glob patterns and dependency propagation |
-| [`image-tags`](#image-tags) | S3-backed image tag state management for deployment tracking |
 | [`tower`](#tower) | Tower release and workflow contract builders for Dagger pipelines |
 
 ## Requirements
@@ -297,73 +296,6 @@ dagger -m ./change-detector call read-version-file \
   --default-version=1.1.0
 ```
 
-#### Generate CalVer version
-
-```bash
-dagger -m ./change-detector call generate-calver \
-  --registry=ghcr.io \
-  --repo=my-org/release-production \
-  --registry-auth=file:~/.docker/config.json
-# Output: v2026.0302.001
-```
-
----
-
-### image-tags
-
-Manage per-environment image tag state in S3. Read, write, merge, and validate tag mappings stored as JSON files.
-
-#### Read current tags
-
-```bash
-dagger -m ./image-tags call \
-  --s3-endpoint=https://s3.example.com \
-  --s3-bucket=ci-artifacts \
-  read \
-    --environment=production \
-    --s3-access-key=env:S3_ACCESS_KEY \
-    --s3-secret-key=env:S3_SECRET_KEY
-```
-
-#### Merge changed service tags
-
-```bash
-dagger -m ./image-tags call \
-  --s3-endpoint=https://s3.example.com \
-  merge \
-    --current-tags-json='{"api":"v1.0.0","web":"v1.0.0"}' \
-    --changed-services-json='{"api":true,"web":false}' \
-    --services-json='[{"name":"api","imageTag":"universal"},{"name":"web","imageTag":"frontend"}]' \
-    --frontend-tag=s-20260302-abc12345 \
-    --universal-tag=u-20260302-abc12345
-```
-
-#### Validate all services have tags
-
-```bash
-dagger -m ./image-tags call \
-  --s3-endpoint=https://s3.example.com \
-  validate \
-    --tags-json='{"api":"v1.0.0"}' \
-    --service-names-json='["api","web"]'
-# Error: Missing image tags for: web. Run pipeline with forceAll=true to bootstrap.
-```
-
-#### Write updated tags
-
-```bash
-dagger -m ./image-tags call \
-  --s3-endpoint=https://s3.example.com \
-  --s3-bucket=ci-artifacts \
-  write \
-    --environment=production \
-    --tags-json='{"api":"u-20260302-abc12345","web":"s-20260302-abc12345"}' \
-    --s3-access-key=env:S3_ACCESS_KEY \
-    --s3-secret-key=env:S3_SECRET_KEY
-```
-
----
-
 ## Composing Modules
 
 These modules are designed to be used together. A typical CI pipeline:
@@ -373,7 +305,7 @@ These modules are designed to be used together. A typical CI pipeline:
 3. **cargo-builder** compiles Rust services
 4. **image-builder** builds Docker images
 5. **oci-registry** publishes and validates OCI content
-6. **image-tags** updates the deployment state in S3
+6. The release pipeline records exact image digests in its immutable OCI bundle
 
 ```typescript
 // Example: using as Dagger module dependencies in your pipeline
@@ -381,6 +313,7 @@ import { dag } from "@dagger.io/dagger";
 
 // Detect changes
 const changes = await dag.changeDetector().detect(source, "v", false, servicesJson, groupsJson);
+const parsed = JSON.parse(changes);
 
 // Build what changed
 if (parsed.services.api) {
@@ -388,11 +321,6 @@ if (parsed.services.api) {
   const built = await dag.bunBuilder().buildBinary(installed, "server");
   await dag.imageBuilder("ghcr.io").buildAndPublish(built, "api", "Dockerfile", tag, auth, "my-org");
 }
-
-// Update state
-const current = await dag.imageTags("https://s3.example.com").read("production", accessKey, secretKey);
-const merged = dag.imageTags("https://s3.example.com").merge(current, changedJson, servicesJson, feTag, uTag);
-await dag.imageTags("https://s3.example.com").write("production", merged, accessKey, secretKey);
 ```
 
 ---

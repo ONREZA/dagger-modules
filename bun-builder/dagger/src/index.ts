@@ -10,6 +10,8 @@ import {
 } from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
+const DEFAULT_BUN_IMAGE =
+  "oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4";
 
 function cacheSharingMode(value: string): CacheSharingMode {
   switch (value.toLowerCase()) {
@@ -28,12 +30,12 @@ function isAlpineImage(image: string): boolean {
   return image.includes("alpine");
 }
 
-function withPackageManagerCache(ctr: Container, image: string, cacheId: string): Container {
+function withPackageManagerCache(ctr: Container, image: string, cacheId: string, sharing: CacheSharingMode): Container {
   if (isAlpineImage(image)) {
-    return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`));
+    return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`), { sharing });
   }
 
-  return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`));
+  return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`), { sharing });
 }
 
 function installCaCertificates(ctr: Container, image: string): Container {
@@ -84,15 +86,15 @@ export class BunBuilder {
    * Run `bun install --frozen-lockfile` with persistent cache.
    * Returns the source directory with node_modules populated.
    *
-   * @param source - Source directory containing bun.lockb and package.json
+   * @param source - Source directory containing bun.lock and package.json
    * @param bunImage - Bun Docker image to use
    */
   @func()
   async install(
     source: Directory,
-    bunImage: string = "oven/bun:1-debian",
+    bunImage: string = DEFAULT_BUN_IMAGE,
     installCache?: CacheVolume,
-    cacheSharing: string = "shared",
+    cacheSharing: string = "locked",
   ): Promise<Directory> {
     const dependencyInput = source.filter({
       include: ["package.json", "bun.lock", "bunfig.toml", "**/package.json", "**/bunfig.toml"],
@@ -133,26 +135,25 @@ export class BunBuilder {
     pkg: string,
     envVarsJson: string = "{}",
     databaseUrl: string = "",
-    bunImage: string = "oven/bun:1-debian",
+    bunImage: string = DEFAULT_BUN_IMAGE,
     sentryRelease: string = "",
     sentryToken?: Secret,
     installCache?: CacheVolume,
-    cacheSharing: string = "shared",
+    cacheSharing: string = "private",
   ): Promise<Directory> {
     validatePackageName(pkg);
     const envVars = parseEnvironmentVariables(envVarsJson);
 
-    let ctr = dag
-      .container()
-      .from(bunImage);
+    let ctr = dag.container().from(bunImage);
 
-    ctr = installCaCertificates(withPackageManagerCache(ctr, bunImage, "bun-ca-certificates"), bunImage);
+    const sharing = cacheSharingMode(cacheSharing);
+    ctr = installCaCertificates(withPackageManagerCache(ctr, bunImage, "bun-ca-certificates", sharing), bunImage);
 
     ctr = ctr
       .withMountedDirectory("/app", source)
       .withWorkdir("/app")
       .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {
-        sharing: cacheSharingMode(cacheSharing),
+        sharing,
       })
       .withEnvVariable("NODE_ENV", "production");
 
@@ -165,9 +166,7 @@ export class BunBuilder {
     }
 
     if (sentryRelease) {
-      ctr = ctr
-        .withEnvVariable("SENTRY_RELEASE", sentryRelease)
-        .withEnvVariable("VITE_SENTRY_RELEASE", sentryRelease);
+      ctr = ctr.withEnvVariable("SENTRY_RELEASE", sentryRelease).withEnvVariable("VITE_SENTRY_RELEASE", sentryRelease);
     }
 
     if (sentryToken) {
@@ -196,9 +195,9 @@ export class BunBuilder {
     source: Directory,
     pkg: string,
     databaseUrl: string = "",
-    bunImage: string = "oven/bun:1-debian",
+    bunImage: string = DEFAULT_BUN_IMAGE,
     installCache?: CacheVolume,
-    cacheSharing: string = "shared",
+    cacheSharing: string = "private",
   ): Promise<Directory> {
     validatePackageName(pkg);
     let ctr = dag
