@@ -8,9 +8,19 @@ import {
   object,
   type Secret,
   type Service,
+  type Socket,
 } from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
+const DEFAULT_SSH_PORT = 22;
+const MAX_PORT = 65_535;
+const TARGET_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+const CACHE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const PACKAGE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9+._:=~-]*$/;
+const WORKSPACE_MANIFEST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+const SSH_HOST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
+const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const WHITESPACE_PATTERN = /\s+/;
 
 function cacheSharingMode(value: string): CacheSharingMode {
   switch (value.toLowerCase()) {
@@ -25,27 +35,23 @@ function cacheSharingMode(value: string): CacheSharingMode {
   }
 }
 
-function isAlpineImage(image: string): boolean {
-  return image.includes("alpine");
-}
-
 function withPackageManagerCache(
   ctr: Container,
-  buildImage: string,
+  alpine: boolean,
   cacheId: string,
   sharing: CacheSharingMode,
 ): Container {
-  if (isAlpineImage(buildImage)) {
+  if (alpine) {
     return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`), { sharing });
   }
 
   return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`), { sharing });
 }
 
-function installSystemPackages(ctr: Container, buildImage: string, packages: string[]): Container {
+function installSystemPackages(ctr: Container, alpine: boolean, packages: string[]): Container {
   if (packages.length === 0) return ctr;
 
-  if (isAlpineImage(buildImage)) {
+  if (alpine) {
     return ctr.withExec(["apk", "add", "--cache-dir", "/var/cache/apk", "--update-cache", ...packages]);
   }
 
@@ -61,19 +67,6 @@ function installSystemPackages(ctr: Container, buildImage: string, packages: str
   ]);
 }
 
-function imageContainer(
-  image: string,
-  registryAddress: string,
-  registryUsername: string,
-  registryPassword?: Secret,
-): Container {
-  if (!registryPassword) return dag.container().from(image);
-  if (!registryAddress || !registryUsername) {
-    throw new Error("registryAddress and registryUsername are required with registryPassword");
-  }
-  return dag.container().withRegistryAuth(registryAddress, registryUsername, registryPassword).from(image);
-}
-
 function validateBuildInputs(
   targets: string[],
   cacheId: string,
@@ -82,24 +75,24 @@ function validateBuildInputs(
   sshHost: string,
   sshPort: number,
 ): void {
-  if (targets.length === 0 || targets.some((target) => !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(target))) {
+  if (targets.length === 0 || targets.some((target) => !TARGET_NAME_PATTERN.test(target))) {
     throw new Error("targets must be a non-empty comma-separated list of Cargo package or binary names");
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(cacheId)) {
+  if (!CACHE_ID_PATTERN.test(cacheId)) {
     throw new Error(`Invalid cacheId: ${cacheId}`);
   }
-  if (packages.some((name) => !/^[A-Za-z0-9][A-Za-z0-9+._:=~-]*$/.test(name))) {
+  if (packages.some((name) => !PACKAGE_NAME_PATTERN.test(name))) {
     throw new Error("extraPackages contains an invalid package name");
   }
   if (
     workspaceManifest &&
-    (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(workspaceManifest) ||
+    (!WORKSPACE_MANIFEST_PATTERN.test(workspaceManifest) ||
       workspaceManifest.includes("..") ||
       workspaceManifest.includes("//"))
   ) {
     throw new Error(`Invalid workspaceManifest: ${workspaceManifest}`);
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(sshHost) || sshPort < 1 || sshPort > 65_535) {
+  if (!SSH_HOST_PATTERN.test(sshHost) || sshPort < 1 || sshPort > MAX_PORT) {
     throw new Error("sshHost or sshPort is invalid");
   }
 }
@@ -122,7 +115,7 @@ export class CargoBuilder {
    * binaries copied to `.production/binaries/{cacheId}/`.
    *
    * @param source - Source directory containing Cargo workspace
-   * @param buildImage - Rust build image (e.g., "rust:1.93-alpine" or "rust:1.93")
+   * @param buildContainer - Prepared Rust build container
    * @param targets - Comma-separated cargo targets (e.g., "my-server,my-cli")
    * @param cacheId - Cache directory identifier (e.g., "musl" or "glibc") — used for cache volume naming
    * @param workspaceManifest - Path to workspace Cargo.toml relative to source root (empty = root)
@@ -130,6 +123,7 @@ export class CargoBuilder {
    * @param buildEnv - Comma-separated env vars for build (e.g., "DATABASE_URL=postgres://...,SQLX_OFFLINE=true")
    * @param binFlags - If true, use `--bin <target>` instead of `-p <target>`
    * @param sshKey - SSH private key for private git dependencies
+   * @param sshAuthSocket - Forwarded host SSH agent for private git dependencies
    * @param sshHost - SSH host to keyscan for known_hosts (e.g., "github.com")
    * @param sshPort - SSH port for the host (default: 22)
    * @param dbService - Dagger Service for database access during build (sqlx compile-time verification)
@@ -138,7 +132,7 @@ export class CargoBuilder {
   @func()
   async build(
     source: Directory,
-    buildImage: string,
+    buildContainer: Container,
     targets: string,
     cacheId: string,
     workspaceManifest: string = "",
@@ -146,8 +140,9 @@ export class CargoBuilder {
     buildEnv: string = "",
     binFlags: boolean = false,
     sshKey?: Secret,
+    sshAuthSocket?: Socket,
     sshHost: string = "github.com",
-    sshPort: number = 22,
+    sshPort: number = DEFAULT_SSH_PORT,
     dbService?: Service,
     dbHostname: string = "db",
     registryCache?: CacheVolume,
@@ -155,15 +150,13 @@ export class CargoBuilder {
     targetCache?: CacheVolume,
     cacheSharing: string = "locked",
     systemPackagesInstalled: boolean = false,
-    registryAddress: string = "",
-    registryUsername: string = "",
-    registryPassword?: Secret,
   ): Promise<Directory> {
+    if (sshKey && sshAuthSocket) throw new Error("sshKey and sshAuthSocket are mutually exclusive");
     if (systemPackagesInstalled && extraPackages.trim()) {
       throw new Error("extraPackages must be empty when systemPackagesInstalled is true");
     }
-    const packageSet = new Set(extraPackages.split(/\s+/).filter(Boolean));
-    if (sshKey && !systemPackagesInstalled) {
+    const packageSet = new Set(extraPackages.split(WHITESPACE_PATTERN).filter(Boolean));
+    if ((sshKey || sshAuthSocket) && !systemPackagesInstalled) {
       packageSet.add("git");
       packageSet.add("git-lfs");
       packageSet.add("openssh-client");
@@ -175,7 +168,8 @@ export class CargoBuilder {
     validateBuildInputs(targetList, cacheId, [...packageSet], workspaceManifest, sshHost, sshPort);
 
     const sharing = cacheSharingMode(cacheSharing);
-    let ctr = imageContainer(buildImage, registryAddress, registryUsername, registryPassword)
+    const alpine = systemPackagesInstalled ? false : await buildContainer.exists("/etc/alpine-release");
+    let ctr = buildContainer
       // Persistent cargo cache volumes
       .withMountedCache("/cargo-cache/registry", registryCache ?? dag.cacheVolume(`cargo-registry-${cacheId}`), {
         sharing,
@@ -186,7 +180,7 @@ export class CargoBuilder {
       .withEnvVariable("CARGO_TARGET_DIR", "/cargo-cache/target");
 
     if (!systemPackagesInstalled) {
-      ctr = withPackageManagerCache(ctr, buildImage, cacheId, sharing);
+      ctr = withPackageManagerCache(ctr, alpine, cacheId, sharing);
     }
 
     // Bind database service for sqlx compile-time verification
@@ -194,20 +188,31 @@ export class CargoBuilder {
       ctr = ctr.withServiceBinding(dbHostname, dbService);
     }
 
-    ctr = installSystemPackages(ctr, buildImage, [...packageSet]);
+    ctr = installSystemPackages(ctr, alpine, [...packageSet]);
 
     // Setup SSH for private git dependencies
-    if (sshKey) {
-      ctr = ctr.withExec(["git", "lfs", "install"]);
+    if (sshKey || sshAuthSocket) {
+      ctr = ctr
+        .withExec([SHELL, "-c", "mkdir -p /root/.ssh && chmod 700 /root/.ssh"])
+        .withExec(["git", "lfs", "install"]);
 
       const sshPortStr = String(sshPort);
+      const identityArgument = sshKey ? " -i /root/.ssh/id_rsa" : "";
       const sshCmd =
-        sshPort === 22
-          ? "ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new"
-          : `ssh -p ${sshPortStr} -i /root/.ssh/id_rsa -o StrictHostKeyChecking=accept-new -o HostKeyAlgorithms=+ssh-rsa`;
+        sshPort === DEFAULT_SSH_PORT
+          ? `ssh${identityArgument} -o StrictHostKeyChecking=accept-new`
+          : `ssh -p ${sshPortStr}${identityArgument} -o StrictHostKeyChecking=accept-new -o HostKeyAlgorithms=+ssh-rsa`;
 
+      if (sshKey)
+        ctr = ctr.withMountedSecret("/root/.ssh/id_rsa", sshKey, {
+          mode: 0o400,
+        });
+      if (sshAuthSocket) {
+        ctr = ctr
+          .withUnixSocket("/run/ssh-agent.sock", sshAuthSocket)
+          .withEnvVariable("SSH_AUTH_SOCK", "/run/ssh-agent.sock");
+      }
       ctr = ctr
-        .withMountedSecret("/root/.ssh/id_rsa", sshKey, { mode: 0o400 })
         .withExec([
           SHELL,
           "-c",
@@ -230,7 +235,7 @@ export class CargoBuilder {
         const eqIdx = pair.indexOf("=");
         if (eqIdx < 1) throw new Error(`Invalid build environment entry: ${pair}`);
         const key = pair.slice(0, eqIdx);
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid build environment key: ${key}`);
+        if (!ENVIRONMENT_NAME_PATTERN.test(key)) throw new Error(`Invalid build environment key: ${key}`);
         ctr = ctr.withEnvVariable(key, pair.slice(eqIdx + 1));
       }
     }

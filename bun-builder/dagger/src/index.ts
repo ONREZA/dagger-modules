@@ -6,12 +6,12 @@ import {
   dag,
   func,
   object,
-  type Secret,
 } from "@dagger.io/dagger";
 
 const SHELL = "/bin/sh";
-const DEFAULT_BUN_IMAGE =
-  "oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4";
+const DEFAULT_BUN_IMAGE = "oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4";
+const PACKAGE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function cacheSharingMode(value: string): CacheSharingMode {
   switch (value.toLowerCase()) {
@@ -26,20 +26,21 @@ function cacheSharingMode(value: string): CacheSharingMode {
   }
 }
 
-function isAlpineImage(image: string): boolean {
-  return image.includes("alpine");
-}
-
-function withPackageManagerCache(ctr: Container, image: string, cacheId: string, sharing: CacheSharingMode): Container {
-  if (isAlpineImage(image)) {
+function withPackageManagerCache(
+  ctr: Container,
+  alpine: boolean,
+  cacheId: string,
+  sharing: CacheSharingMode,
+): Container {
+  if (alpine) {
     return ctr.withMountedCache("/var/cache/apk", dag.cacheVolume(`apk-cache-${cacheId}`), { sharing });
   }
 
   return ctr.withMountedCache("/var/cache/apt/archives", dag.cacheVolume(`apt-archives-${cacheId}`), { sharing });
 }
 
-function installCaCertificates(ctr: Container, image: string): Container {
-  if (isAlpineImage(image)) {
+function installCaCertificates(ctr: Container, alpine: boolean): Container {
+  if (alpine) {
     return ctr.withExec(["apk", "add", "--cache-dir", "/var/cache/apk", "--update-cache", "ca-certificates"]);
   }
 
@@ -55,21 +56,12 @@ function installCaCertificates(ctr: Container, image: string): Container {
   ]);
 }
 
-function imageContainer(
-  image: string,
-  registryAddress: string,
-  registryUsername: string,
-  registryPassword?: Secret,
-): Container {
-  if (!registryPassword) return dag.container().from(image);
-  if (!registryAddress || !registryUsername) {
-    throw new Error("registryAddress and registryUsername are required with registryPassword");
-  }
-  return dag.container().withRegistryAuth(registryAddress, registryUsername, registryPassword).from(image);
+function bunBuildContainer(container?: Container): Container {
+  return container ?? dag.container().from(DEFAULT_BUN_IMAGE);
 }
 
 function validatePackageName(pkg: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(pkg)) {
+  if (!PACKAGE_NAME_PATTERN.test(pkg)) {
     throw new Error(`Invalid Bun package build name: ${pkg}`);
   }
 }
@@ -80,7 +72,7 @@ function parseEnvironmentVariables(raw: string): Record<string, string> {
     throw new Error("envVarsJson must contain a JSON object");
   }
   for (const [key, entry] of Object.entries(value)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof entry !== "string") {
+    if (!ENVIRONMENT_NAME_PATTERN.test(key) || typeof entry !== "string") {
       throw new Error(`Invalid environment variable entry: ${key}`);
     }
   }
@@ -100,23 +92,20 @@ export class BunBuilder {
    * Returns the source directory with node_modules populated.
    *
    * @param source - Source directory containing bun.lock and package.json
-   * @param bunImage - Bun Docker image to use
+   * @param bunContainer - Prepared Bun build container. Defaults to the pinned upstream Bun image.
    */
   @func()
   async install(
     source: Directory,
-    bunImage: string = DEFAULT_BUN_IMAGE,
+    bunContainer?: Container,
     installCache?: CacheVolume,
     cacheSharing: string = "locked",
-    registryAddress: string = "",
-    registryUsername: string = "",
-    registryPassword?: Secret,
   ): Promise<Directory> {
     const dependencyInput = source.filter({
       include: ["package.json", "bun.lock", "bunfig.toml", "**/package.json", "**/bunfig.toml"],
       exclude: ["**/node_modules/**"],
     });
-    const installed = imageContainer(bunImage, registryAddress, registryUsername, registryPassword)
+    const installed = bunBuildContainer(bunContainer)
       .withDirectory("/app", dependencyInput)
       .withWorkdir("/app")
       .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {
@@ -132,41 +121,34 @@ export class BunBuilder {
    * Build a frontend package with environment variables.
    *
    * Runs `bun run build:{pkg}` inside a container with the given environment
-   * variables. Optionally sets up Sentry release and auth token for sourcemap
-   * uploads.
+   * variables.
    *
    * @param source - Source directory (should have node_modules from install step or will auto-install)
    * @param pkg - Package name (used as `bun run build:{pkg}`)
    * @param envVarsJson - JSON object of environment variables to set (e.g. '{"VITE_API_URL":"https://api.example.com"}')
    * @param databaseUrl - Database URL for Prisma generate (if needed)
-   * @param bunImage - Bun Docker image to use
-   * @param sentryRelease - Sentry release tag (sets SENTRY_RELEASE and VITE_SENTRY_RELEASE env vars)
-   * @param sentryToken - Sentry auth token for sourcemap uploads
+   * @param bunContainer - Prepared Bun build container. Defaults to the pinned upstream Bun image.
    */
   @func()
   async build(
     source: Directory,
     pkg: string,
+    bunContainer?: Container,
     envVarsJson: string = "{}",
     databaseUrl: string = "",
-    bunImage: string = DEFAULT_BUN_IMAGE,
-    sentryRelease: string = "",
-    sentryToken?: Secret,
     installCache?: CacheVolume,
     cacheSharing: string = "private",
     systemPackagesInstalled: boolean = false,
-    registryAddress: string = "",
-    registryUsername: string = "",
-    registryPassword?: Secret,
   ): Promise<Directory> {
     validatePackageName(pkg);
     const envVars = parseEnvironmentVariables(envVarsJson);
 
-    let ctr = imageContainer(bunImage, registryAddress, registryUsername, registryPassword);
+    let ctr = bunBuildContainer(bunContainer);
 
     const sharing = cacheSharingMode(cacheSharing);
     if (!systemPackagesInstalled) {
-      ctr = installCaCertificates(withPackageManagerCache(ctr, bunImage, "bun-ca-certificates", sharing), bunImage);
+      const alpine = await ctr.exists("/etc/alpine-release");
+      ctr = installCaCertificates(withPackageManagerCache(ctr, alpine, "bun-ca-certificates", sharing), alpine);
     }
 
     ctr = ctr
@@ -185,14 +167,6 @@ export class BunBuilder {
       ctr = ctr.withEnvVariable(key, value);
     }
 
-    if (sentryRelease) {
-      ctr = ctr.withEnvVariable("SENTRY_RELEASE", sentryRelease).withEnvVariable("VITE_SENTRY_RELEASE", sentryRelease);
-    }
-
-    if (sentryToken) {
-      ctr = ctr.withSecretVariable("SENTRY_AUTH_TOKEN", sentryToken);
-    }
-
     ctr = ctr.withExec(["bun", "run", `build:${pkg}`]);
 
     return ctr.directory("/app");
@@ -208,22 +182,19 @@ export class BunBuilder {
    * @param source - Source directory with node_modules
    * @param pkg - Package name (used as `bun run build:{pkg}`)
    * @param databaseUrl - Database URL for Prisma generate (if needed)
-   * @param bunImage - Bun Docker image to use
+   * @param bunContainer - Prepared Bun build container. Defaults to the pinned upstream Bun image.
    */
   @func()
   async buildBinary(
     source: Directory,
     pkg: string,
+    bunContainer?: Container,
     databaseUrl: string = "",
-    bunImage: string = DEFAULT_BUN_IMAGE,
     installCache?: CacheVolume,
     cacheSharing: string = "private",
-    registryAddress: string = "",
-    registryUsername: string = "",
-    registryPassword?: Secret,
   ): Promise<Directory> {
     validatePackageName(pkg);
-    let ctr = imageContainer(bunImage, registryAddress, registryUsername, registryPassword)
+    let ctr = bunBuildContainer(bunContainer)
       .withMountedDirectory("/app", source)
       .withWorkdir("/app")
       .withMountedCache("/root/.bun/install/cache", installCache ?? dag.cacheVolume("bun-install-cache"), {

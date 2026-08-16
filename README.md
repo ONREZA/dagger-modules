@@ -317,11 +317,17 @@ const parsed = JSON.parse(changes);
 
 // Build what changed
 if (parsed.services.api) {
-  const installed = await dag.bunBuilder().install(source);
-  const built = await dag.bunBuilder().buildBinary(installed, "server");
+  const bun = dag.container().from("oven/bun:1.3.14");
+  const installed = await dag.bunBuilder().install(source, { bunContainer: bun });
+  const built = await dag.bunBuilder().buildBinary(installed, "server", { bunContainer: bun });
   await dag.imageBuilder("ghcr.io").buildAndPublish(built, "api", "Dockerfile", tag, auth, "my-org");
 }
 ```
+
+Builder modules accept `Container` inputs rather than registry references. This
+lets a caller compose a locally built base image directly into downstream build
+graphs; pulling a public or private reference remains the caller's explicit
+boundary.
 
 ---
 
