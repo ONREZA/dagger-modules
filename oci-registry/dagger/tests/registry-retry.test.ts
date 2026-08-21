@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  isMissingRegistryError,
   isRetryableRegistryError,
   retryPolicy,
   retryRegistryOperation,
@@ -67,5 +68,12 @@ describe("OCI registry retries", () => {
     expect(isRetryableRegistryError(new Error("404 manifest unknown"))).toBeFalse();
     expect(isRetryableRegistryError(new Error("404 manifest unknown"), true)).toBeTrue();
     expect(isRetryableRegistryError(new Error("401 Unauthorized"))).toBeFalse();
+  });
+
+  test("classifies missing registry references independently from retries", () => {
+    expect(isMissingRegistryError(new Error("MANIFEST_UNKNOWN: manifest unknown"))).toBeTrue();
+    expect(isMissingRegistryError(new Error("404 Not Found"))).toBeTrue();
+    expect(isMissingRegistryError(new Error("503 Service Unavailable"))).toBeFalse();
+    expect(isMissingRegistryError(new Error("401 Unauthorized"))).toBeFalse();
   });
 });

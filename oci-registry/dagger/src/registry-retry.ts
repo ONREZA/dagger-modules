@@ -73,6 +73,12 @@ export function registryErrorMessage(error: unknown): string {
     .join("\n");
 }
 
+export function isMissingRegistryError(error: unknown): boolean {
+  return /\b(404|manifest unknown|manifest_unknown|name unknown|name_unknown|not found)\b/i.test(
+    registryErrorMessage(error),
+  );
+}
+
 export function isRetryableRegistryError(
   error: unknown,
   retryNotFound = false,
@@ -81,7 +87,7 @@ export function isRetryableRegistryError(
   if (NON_RETRYABLE_MARKERS.some((marker) => message.includes(marker))) {
     return false;
   }
-  if (retryNotFound && /\b(404|manifest unknown|name unknown|not found)\b/.test(message)) {
+  if (retryNotFound && isMissingRegistryError(error)) {
     return true;
   }
   return (

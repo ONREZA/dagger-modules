@@ -155,6 +155,15 @@ dagger -m ./oci-registry call read-config \
 dagger -m ./oci-registry call resolve-digest \
   --reference=ghcr.io/example/app:v1 \
   --registry-auth=file:~/.docker/config.json
+
+# Resolve without failing when the reference is absent, or delete idempotently.
+dagger -m ./oci-registry call resolve-optional-digest \
+  --reference=ghcr.io/example/app:v1 \
+  --registry-auth=file:~/.docker/config.json
+
+dagger -m ./oci-registry call delete-reference \
+  --reference=ghcr.io/example/app:v1 \
+  --registry-auth=file:~/.docker/config.json
 ```
 
 Composable pipelines call the concrete operations independently:

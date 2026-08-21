@@ -14,6 +14,7 @@ import {
   parseReference,
 } from "./registry-reference.js";
 import {
+  isMissingRegistryError,
   retryPolicy,
   retryRegistryOperation,
 } from "./registry-retry.js";
@@ -367,6 +368,22 @@ export class OciRegistry {
   }
 
   /**
+   * Resolve a tag or digest reference, returning null when it does not exist.
+   */
+  @func({ cache: "never" })
+  async resolveOptionalDigest(
+    reference: string,
+    registryAuth: Secret,
+  ): Promise<string | null> {
+    try {
+      return await this.resolveDigest(reference, registryAuth);
+    } catch (error) {
+      if (isMissingRegistryError(error)) return null;
+      throw error;
+    }
+  }
+
+  /**
    * Read the raw OCI manifest JSON for a reference.
    */
   @func({ cache: "never" })
@@ -463,6 +480,27 @@ export class OciRegistry {
           .sync(),
     );
     return destinationRef.reference;
+  }
+
+  /**
+   * Delete a tag or digest reference. Missing references are an idempotent no-op.
+   */
+  @func({ cache: "never" })
+  async deleteReference(
+    reference: string,
+    registryAuth: Secret,
+  ): Promise<string> {
+    const parsed = parseReference(reference);
+    try {
+      await this.retry(`delete ${parsed.reference}`, async (attempt) =>
+        (await this.crane(registryAuth, attempt))
+          .withExec(["crane", "delete", parsed.reference])
+          .sync());
+      return "deleted";
+    } catch (error) {
+      if (isMissingRegistryError(error)) return "missing";
+      throw error;
+    }
   }
 
   /**
