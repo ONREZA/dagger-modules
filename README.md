@@ -161,6 +161,10 @@ dagger -m ./oci-registry call resolve-optional-digest \
   --reference=ghcr.io/example/app:v1 \
   --registry-auth=file:~/.docker/config.json
 
+dagger -m ./oci-registry call list-optional-tags \
+  --repository=ghcr.io/example/app \
+  --registry-auth=file:~/.docker/config.json
+
 dagger -m ./oci-registry call delete-reference \
   --reference=ghcr.io/example/app:v1 \
   --registry-auth=file:~/.docker/config.json

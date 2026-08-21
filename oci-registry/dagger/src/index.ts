@@ -441,6 +441,22 @@ export class OciRegistry {
   }
 
   /**
+   * List repository tags, returning an empty list when the repository does not exist.
+   */
+  @func({ cache: "never" })
+  async listOptionalTags(
+    repository: string,
+    registryAuth: Secret,
+  ): Promise<string[]> {
+    try {
+      return await this.listTags(repository, registryAuth);
+    } catch (error) {
+      if (isMissingRegistryError(error)) return [];
+      throw error;
+    }
+  }
+
+  /**
    * Verify manifest/config integrity and that every referenced remote layer exists.
    */
   @func({ cache: "never" })
