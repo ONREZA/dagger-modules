@@ -128,6 +128,8 @@ export class CargoBuilder {
    * @param sshPort - SSH port for the host (default: 22)
    * @param dbService - Dagger Service for database access during build (sqlx compile-time verification)
    * @param dbHostname - Hostname for the database service binding (default: "db")
+   * @param dependencyCacheSharing - Sharing mode for registry, git and package-manager caches
+   * @param targetCacheSharing - Sharing mode for the compiler target cache
    */
   @func()
   async build(
@@ -148,7 +150,8 @@ export class CargoBuilder {
     registryCache?: CacheVolume,
     gitCache?: CacheVolume,
     targetCache?: CacheVolume,
-    cacheSharing: string = "locked",
+    dependencyCacheSharing: string = "locked",
+    targetCacheSharing: string = "locked",
     systemPackagesInstalled: boolean = false,
   ): Promise<Directory> {
     if (sshKey && sshAuthSocket) throw new Error("sshKey and sshAuthSocket are mutually exclusive");
@@ -167,20 +170,25 @@ export class CargoBuilder {
       .filter(Boolean);
     validateBuildInputs(targetList, cacheId, [...packageSet], workspaceManifest, sshHost, sshPort);
 
-    const sharing = cacheSharingMode(cacheSharing);
+    const dependencySharing = cacheSharingMode(dependencyCacheSharing);
+    const targetSharing = cacheSharingMode(targetCacheSharing);
     const alpine = systemPackagesInstalled ? false : await buildContainer.exists("/etc/alpine-release");
     let ctr = buildContainer
       // Persistent cargo cache volumes
       .withMountedCache("/cargo-cache/registry", registryCache ?? dag.cacheVolume(`cargo-registry-${cacheId}`), {
-        sharing,
+        sharing: dependencySharing,
       })
-      .withMountedCache("/cargo-cache/git", gitCache ?? dag.cacheVolume(`cargo-git-${cacheId}`), { sharing })
-      .withMountedCache("/cargo-cache/target", targetCache ?? dag.cacheVolume(`cargo-target-${cacheId}`), { sharing })
+      .withMountedCache("/cargo-cache/git", gitCache ?? dag.cacheVolume(`cargo-git-${cacheId}`), {
+        sharing: dependencySharing,
+      })
+      .withMountedCache("/cargo-cache/target", targetCache ?? dag.cacheVolume(`cargo-target-${cacheId}`), {
+        sharing: targetSharing,
+      })
       .withEnvVariable("CARGO_HOME", "/cargo-cache")
       .withEnvVariable("CARGO_TARGET_DIR", "/cargo-cache/target");
 
     if (!systemPackagesInstalled) {
-      ctr = withPackageManagerCache(ctr, alpine, cacheId, sharing);
+      ctr = withPackageManagerCache(ctr, alpine, cacheId, dependencySharing);
     }
 
     // Bind database service for sqlx compile-time verification
@@ -258,9 +266,8 @@ export class CargoBuilder {
     }
 
     // Build cargo flags
-    const cargoFlags = targetList.map((t) => (binFlags ? `--bin ${t}` : `-p ${t}`)).join(" ");
-
-    ctr = ctr.withExec([SHELL, "-c", `cargo build --release ${cargoFlags}`]);
+    const cargoFlags = targetList.flatMap((target) => [binFlags ? "--bin" : "-p", target]);
+    ctr = ctr.withExec(["cargo", "build", "--release", "--locked", ...cargoFlags]);
 
     // Copy binaries to output directory
     const outputDir = `/src/.production/binaries/${cacheId}`;

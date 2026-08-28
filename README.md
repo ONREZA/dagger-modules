@@ -77,8 +77,10 @@ dagger -m ./bun-builder call build-binary \
 Build Rust binaries with persistent cargo cache volumes. Supports both Alpine (musl) and Debian (glibc) build images, workspace manifests, SSH private dependencies, and database service bindings for compile-time verification.
 
 Composed modules may supply separate registry, git and target `CacheVolume`
-objects. Keep target caches separate when profiles use incompatible compiler
-flags; registry and git caches can normally be shared.
+objects. Reuse namespaced registry and git caches across compatible builds with
+`dependency-cache-sharing=shared`. Keep repository-scoped target caches separate
+when profiles use incompatible compiler flags and mount them with
+`target-cache-sharing=locked`.
 
 #### Basic build
 
