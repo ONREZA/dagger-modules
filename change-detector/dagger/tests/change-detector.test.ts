@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectChangesForFiles, toDetectResult } from "../src/index.js";
+import { detectChangesForFiles, resolveExplicitBaseRef, toDetectResult } from "../src/index.js";
 
 const METADATA = {
   commitSha: "0123456789abcdef",
@@ -72,5 +72,18 @@ describe("change-detector", () => {
     expect(() =>
       detectChangesForFiles(["apps/api/router.ts"], [{ name: "api", detectPaths: ["apps/*"] }], GROUPS, METADATA),
     ).toThrow("Unsupported glob pattern");
+  });
+
+  test("accepts an explicitly resolved base from a divergent history", async () => {
+    const resolved = "f".repeat(40);
+
+    expect(await resolveExplicitBaseRef("p-20260613-120000-deadbeef", async () => resolved)).toBe(resolved);
+  });
+
+  test("rejects invalid and unresolved explicit bases", async () => {
+    expect(resolveExplicitBaseRef("../main", async () => "f".repeat(40))).rejects.toThrow("Invalid base ref");
+    expect(resolveExplicitBaseRef("missing", async () => "")).rejects.toThrow(
+      "Base ref does not resolve to a commit",
+    );
   });
 });

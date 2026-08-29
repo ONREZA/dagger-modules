@@ -291,8 +291,9 @@ dagger -m ./change-detector call detect \
 
 #### Compare with an exact previous release commit
 
-Pass an ancestor commit or ref through `base-ref` to avoid depending on tag
-discovery. The detector rejects a ref that is not an ancestor of `HEAD`.
+Pass an exact commit or ref through `base-ref` to avoid depending on tag
+discovery. Explicit bases compare Git trees and may come from a divergent
+release branch; the referenced commit must exist in the supplied repository.
 
 ```bash
 dagger -m ./change-detector call detect \

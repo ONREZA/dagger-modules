@@ -65,6 +65,7 @@ export class ChangeDetector {
    * @param forceAll - Force all services as changed
    * @param servicesJson - JSON array of {name, detectPaths, dependsOn?} objects
    * @param groupsJson - JSON array of {name, detectPaths} objects (virtual dependency groups)
+   * @param baseRef - Exact previous tree to compare, including a commit from divergent history
    * @returns JSON string with detection results
    */
   @func()
@@ -264,13 +265,33 @@ function validateDependencies(services: ServiceDef[], groups: GroupDef[]): void 
 }
 
 async function findLastTag(gitCtr: ReturnType<typeof dag.container>, tagPrefix: string): Promise<string> {
-  const allTagsRaw = (
-    await gitCtr.withExec(["git", "tag", "--merged", "HEAD", "-l", `${tagPrefix}-*`, "--sort=-creatordate"]).stdout()
+  return (
+    await gitCtr
+      .withExec([
+        "git",
+        "for-each-ref",
+        "--merged=HEAD",
+        "--sort=-creatordate",
+        "--count=1",
+        "--format=%(refname:short)",
+        `refs/tags/${tagPrefix}-*`,
+      ])
+      .stdout()
   ).trim();
-  return allTagsRaw.split("\n")[0] ?? "";
 }
 
 async function resolveBaseRef(gitCtr: ReturnType<typeof dag.container>, baseRef: string): Promise<string> {
+  return resolveExplicitBaseRef(baseRef, async (ref) =>
+    (
+      await gitCtr.withExec(["git", "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]).stdout()
+    ).trim(),
+  );
+}
+
+export async function resolveExplicitBaseRef(
+  baseRef: string,
+  resolveCommit: (ref: string) => Promise<string>,
+): Promise<string> {
   if (
     !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(baseRef) ||
     baseRef.includes("..") ||
@@ -282,18 +303,11 @@ async function resolveBaseRef(gitCtr: ReturnType<typeof dag.container>, baseRef:
 
   let resolved: string;
   try {
-    resolved = (
-      await gitCtr.withExec(["git", "rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`]).stdout()
-    ).trim();
+    resolved = (await resolveCommit(baseRef)).trim();
   } catch {
     throw new Error(`Base ref does not resolve to a commit: ${baseRef}`);
   }
-
-  try {
-    await gitCtr.withExec(["git", "merge-base", "--is-ancestor", resolved, "HEAD"]).sync();
-  } catch {
-    throw new Error(`Base ref is not an ancestor of HEAD: ${baseRef}`);
-  }
+  if (!resolved) throw new Error(`Base ref does not resolve to a commit: ${baseRef}`);
   return resolved;
 }
 
