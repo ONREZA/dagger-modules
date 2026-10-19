@@ -14,6 +14,7 @@ import {
   parseReference,
 } from "./registry-reference.js";
 import {
+  isImageUploadRangeError,
   isMissingRegistryError,
   retryPolicy,
   retryRegistryOperation,
@@ -247,6 +248,7 @@ export class OciRegistry {
     description: string,
     operation: (attempt: number) => Promise<T>,
     retryNotFound = false,
+    retryWhen?: (error: unknown) => boolean,
   ): Promise<T> {
     return retryRegistryOperation(
       description,
@@ -257,6 +259,7 @@ export class OciRegistry {
         maxDelayMs: this.maxDelayMs,
       },
       retryNotFound,
+      { retryWhen },
     );
   }
 
@@ -316,6 +319,8 @@ export class OciRegistry {
     return this.retry(
       `publish image ${parsed.reference}`,
       () => authenticated.publish(parsed.reference),
+      false,
+      isImageUploadRangeError,
     );
   }
 

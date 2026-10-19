@@ -14,6 +14,10 @@ const NON_RETRYABLE_MARKERS = [
   "unsupported media type",
 ] as const;
 
+function isTerminalRegistryMessage(message: string): boolean {
+  return NON_RETRYABLE_MARKERS.some((marker) => message.includes(marker));
+}
+
 const RETRYABLE_MARKERS = [
   "connection reset",
   "connection refused",
@@ -40,6 +44,7 @@ type RetryDependencies = {
   sleep?: (delayMs: number) => Promise<void>;
   random?: () => number;
   warn?: (message: string) => void;
+  retryWhen?: (error: unknown) => boolean;
 };
 
 export function retryPolicy(
@@ -79,12 +84,22 @@ export function isMissingRegistryError(error: unknown): boolean {
   );
 }
 
+function hasRetryableHttpStatus(message: string): boolean {
+  if (/\b(?:get|head|post|put|patch|delete) request to https?:\/\/\S+:\s+(?:408|425|429|5\d\d)\b/.test(message)) {
+    return true;
+  }
+  // Registry URLs and artifact sizes are not HTTP response statuses.
+  const response = message.replace(/https?:\/\/\S+/g, "");
+  return /\b(?:http(?:\/\d+(?:\.\d+)?)?(?:\s+status)?|status(?:\s+code)?)\b\s*[:=]?\s*(?:408|425|429|5\d\d)\b/.test(response)
+    || /\b(?:408|425|429|5\d\d)\s+(?:response\b|request timeout\b|too early\b|too many requests\b|internal server error\b|not implemented\b|bad gateway\b|service unavailable\b|gateway timeout\b|http version not supported\b|variant also negotiates\b|insufficient storage\b|loop detected\b|not extended\b|network authentication required\b)/.test(response);
+}
+
 export function isRetryableRegistryError(
   error: unknown,
   retryNotFound = false,
 ): boolean {
   const message = registryErrorMessage(error).toLowerCase();
-  if (NON_RETRYABLE_MARKERS.some((marker) => message.includes(marker))) {
+  if (isTerminalRegistryMessage(message)) {
     return false;
   }
   if (retryNotFound && isMissingRegistryError(error)) {
@@ -92,9 +107,16 @@ export function isRetryableRegistryError(
   }
   return (
     RETRYABLE_MARKERS.some((marker) => message.includes(marker))
-    || /\b(408|425|429|5\d\d)\b/.test(message)
+    || hasRetryableHttpStatus(message)
     || message === "eof"
     || message.endsWith(": eof")
+  );
+}
+
+/** A new image push can restart an ambiguous blob upload with a fresh session. */
+export function isImageUploadRangeError(error: unknown): boolean {
+  return /\bPUT request to https?:\/\/[^\s/]+\/v2\/[^\s?#]+\/blobs\/uploads\/[^\s?#]+(?:\?[^\s]*)?: 416\b/i.test(
+    registryErrorMessage(error),
   );
 }
 
@@ -121,7 +143,8 @@ export async function retryRegistryOperation<T>(
     } catch (error) {
       if (
         attempt >= attempts
-        || !isRetryableRegistryError(error, retryNotFound)
+        || isTerminalRegistryMessage(registryErrorMessage(error).toLowerCase())
+        || (!isRetryableRegistryError(error, retryNotFound) && !dependencies.retryWhen?.(error))
       ) {
         throw error;
       }
@@ -132,8 +155,7 @@ export async function retryRegistryOperation<T>(
       );
       const delayMs = Math.round(exponentialDelay * (0.5 + random() * 0.5));
       warn(
-        `${description} failed on attempt ${attempt}/${attempts}: `
-        + `${registryErrorMessage(error)}; retrying in `
+        `${description} failed on attempt ${attempt}/${attempts}; retrying in `
         + `${(delayMs / 1_000).toFixed(1)}s`,
       );
       await sleep(delayMs);
