@@ -10,8 +10,117 @@ import {
 const uploadRangeError = () => new Error(
   "unexpected status from PUT request to https://registry.example/v2/team/image/blobs/uploads/session-1?_state=private-upload-token&digest=sha256%3Aabc: 416 Range Not Satisfiable",
 );
+const uploadUnknownError = (diagnostic = "unknown: blob upload unknown to registry") => new Error(
+  `unexpected status from PUT request to https://registry.example/v2/team/image/blobs/uploads/session-1: 404 Not Found: ${diagnostic}`,
+);
 
 describe("image upload session recovery", () => {
+  test.each(["\n", "\r\n"])("restarts a native multiline upload diagnostic: %j", async (newline) => {
+    const error = Object.assign(new Error(
+      "unexpected status from PUT request to http://localhost:1234/v2/qualification/blobs/uploads/1?offset=0&digest=sha256%3Aabc: 404 Not Found"
+      + `${newline}unknown: blob upload unknown to registry`,
+    ), { name: "GraphQLRequestError" });
+    let calls = 0;
+    const result = await retryRegistryOperation("publish image", async () => {
+      if (++calls === 1) throw error;
+      return "sha256:published";
+    }, retryPolicy(1, 1, 1), false, {
+      retryWhen: isImageUploadRangeError,
+      sleep: async () => {},
+      warn: () => {},
+    });
+    expect(result).toBe("sha256:published");
+    expect(calls).toBe(2);
+  });
+
+  test.each(["BLOB_UPLOAD_UNKNOWN", "unknown: blob upload unknown to registry"])(
+    "restarts an unknown native upload only with publisher policy: %s",
+    async (diagnostic) => {
+      const error = uploadUnknownError(diagnostic);
+      expect(isRetryableRegistryError(error)).toBeFalse();
+      let calls = 0;
+      const result = await retryRegistryOperation("publish image", async () => {
+        if (++calls === 1) throw error;
+        return "sha256:published";
+      }, retryPolicy(1, 1, 1), false, {
+        retryWhen: isImageUploadRangeError,
+        sleep: async () => {},
+        warn: () => {},
+      });
+      expect(result).toBe("sha256:published");
+      expect(calls).toBe(2);
+    },
+  );
+
+  test("does not retry an unknown upload outside the publisher policy", async () => {
+    let calls = 0;
+    await expect(retryRegistryOperation("copy", async () => {
+      calls++;
+      throw uploadUnknownError();
+    }, retryPolicy(1, 1, 1))).rejects.toThrow("404");
+    expect(calls).toBe(1);
+  });
+
+  test.each([
+    "PUT request to https://registry.example/v2/team/image/blobs/uploads/session-1: 404 Not Found",
+    "PUT request to https://registry.example/v2/team/image/blobs/uploads/session-1: 404 BLOB_UNKNOWN",
+    "GET request to https://registry.example/v2/team/image/blobs/uploads/session-1: 404 BLOB_UPLOAD_UNKNOWN",
+    "HEAD request to https://registry.example/v2/team/image/blobs/sha256:abc: 404 BLOB_UPLOAD_UNKNOWN",
+    "PUT request to https://registry.example/v2/team/image/manifests/latest: 404 BLOB_UPLOAD_UNKNOWN",
+    "PUT request to https://registry.example/other/blobs/uploads/session-1: 404 BLOB_UPLOAD_UNKNOWN",
+    "PUT request to https://registry.example/v2/team/image/blobs/uploads/session-1: 400 BLOB_UPLOAD_UNKNOWN",
+    "HTTP 404 BLOB_UPLOAD_UNKNOWN",
+    "PUT request to https://registry.example/v2/team/image/blobs/uploads/session-1: 404 Not Found\nPUT request to https://registry.example/v2/team/image/manifests/latest: 404 BLOB_UPLOAD_UNKNOWN",
+    ...["GET", "HEAD", "POST", "PATCH", "DELETE"].map((method) =>
+      `PUT request to https://registry.example/v2/team/image/blobs/uploads/session: 404 Not Found; ${method} request to https://registry.example/v2/other/blobs/uploads/other: 404 Not Found: BLOB_UPLOAD_UNKNOWN`,
+    ),
+    ...["HTTP/1.1 404 Not Found", "HTTP status: 404", "status code: 404", "404 response"].map((response) =>
+      `PUT request to https://registry.example/v2/team/image/blobs/uploads/session: 404 Not Found; ${response}: BLOB_UPLOAD_UNKNOWN`,
+    ),
+  ])("does not restart an unrelated not-found error: %s", (message) => {
+    expect(isImageUploadRangeError(new Error(message))).toBeFalse();
+  });
+
+  test("still recognizes a later qualifying PUT response in a multi-upload error", () => {
+    expect(isImageUploadRangeError(new Error(
+      "PUT request to https://registry.example/v2/team/image/blobs/uploads/session: 404 Not Found; "
+      + "PUT request to https://registry.example/v2/other/blobs/uploads/other: 404 Not Found: BLOB_UPLOAD_UNKNOWN",
+    ))).toBeTrue();
+  });
+
+  test("keeps a mixed forbidden response terminal despite an unknown upload", async () => {
+    const error = Object.assign(uploadUnknownError(), {
+      stderr: "unexpected status from PUT request to https://registry.example/v2/team/image/manifests/latest: 403 Forbidden",
+    });
+    let calls = 0;
+    await expect(retryRegistryOperation("publish image", async () => {
+      if (++calls === 1) throw error;
+      return "sha256:published";
+    }, retryPolicy(1, 1, 1), false, {
+      retryWhen: isImageUploadRangeError,
+      sleep: async () => {},
+      warn: () => {},
+    })).rejects.toBe(error);
+    expect(calls).toBe(1);
+  });
+
+  test("keeps unknown uploads within the four-attempt publisher budget", async () => {
+    const error = uploadUnknownError();
+    const delays: number[] = [];
+    let calls = 0;
+    await expect(retryRegistryOperation("publish image", async () => {
+      calls++;
+      throw error;
+    }, retryPolicy(), false, {
+      retryWhen: isImageUploadRangeError,
+      random: () => 1,
+      sleep: async (delay) => { delays.push(delay); },
+      warn: () => {},
+    })).rejects.toBe(error);
+    expect(calls).toBe(4);
+    expect(delays).toEqual([5_000, 10_000, 20_000]);
+  });
+
   test("retries a native upload range rejection only with the publisher policy", async () => {
     let calls = 0;
     const result = await retryRegistryOperation("publish image", async () => {

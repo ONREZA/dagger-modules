@@ -1,5 +1,5 @@
-// Explicit fault fixture: receive a blob, return 500, then reject a stale upload offset.
-export function uploadResetRegistry() {
+// Explicit faults: reject a stale offset after 500, or forget a received upload with 404.
+export function uploadResetRegistry(failure: "range" | "unknown" = "range") {
   const blobs = new Map<string, Buffer>();
   const manifests = new Map<string, Buffer>();
   const uploads = new Map<string, number>();
@@ -31,7 +31,10 @@ export function uploadResetRegistry() {
       }
       if (req.method === "PUT" && session) {
         const offset = uploads.get(session);
-        if (offset === undefined) return new Response(null, { status: 404 });
+        const unknownUpload = () => new Response(JSON.stringify({ errors: [{
+          code: "BLOB_UPLOAD_UNKNOWN", message: "blob upload unknown to registry",
+        }] }), { status: 404, headers });
+        if (offset === undefined) return unknownUpload();
         if (Number(url.searchParams.get("offset")) !== offset) {
           events.push({ method: "PUT", session, status: 416 });
           return new Response("invalid content range", { status: 416, headers });
@@ -40,6 +43,11 @@ export function uploadResetRegistry() {
         uploads.set(session, bytes.length);
         if (!failedSession) {
           failedSession = session;
+          if (failure === "unknown") {
+            uploads.delete(session);
+            events.push({ method: "PUT", session, status: 404, length: bytes.length });
+            return unknownUpload();
+          }
           events.push({ method: "PUT", session, status: 500, length: bytes.length });
           return new Response("injected failure after receiving bytes", { status: 500, headers });
         }

@@ -7,6 +7,7 @@ const NON_RETRYABLE_MARKERS = [
   "authentication required",
   "insufficient_scope",
   "access denied",
+  "403 forbidden",
   "denied: requested access",
   "invalid reference",
   "name invalid",
@@ -115,7 +116,7 @@ export function isRetryableRegistryError(
 
 /** A new image push can restart an ambiguous blob upload with a fresh session. */
 export function isImageUploadRangeError(error: unknown): boolean {
-  return /\bPUT request to https?:\/\/[^\s/]+\/v2\/[^\s?#]+\/blobs\/uploads\/[^\s?#]+(?:\?[^\s]*)?: 416\b/i.test(
+  return /\bPUT request to https?:\/\/[^\s/]+\/v2\/[^\s?#]+\/blobs\/uploads\/[^\s?#]+(?:\?[^\s]*)?: (?:416\b|404\b(?:[ \t]+Not Found)?[ \t]*(?::[ \t]*)?(?:\r?\n[ \t]*)?(?:unknown:[ \t]*)?(?:BLOB_UPLOAD_UNKNOWN\b|blob upload unknown to registry\b))/i.test(
     registryErrorMessage(error),
   );
 }

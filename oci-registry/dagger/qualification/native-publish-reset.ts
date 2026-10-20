@@ -38,8 +38,11 @@ try {
     assert.equal(manifest.annotations["org.opencontainers.image.description"], "upload-reset-qualification");
     assert.ok(manifest.layers.some((layer: { mediaType: string }) => layer.mediaType.endsWith("+gzip")));
 
-    for (const recover of [false, true]) {
-      const fixture = uploadResetRegistry();
+    for (const [failure, recover] of [
+      ["range", false], ["range", true],
+      ["unknown", false], ["unknown", true],
+    ] as const) {
+      const fixture = uploadResetRegistry(failure);
       try {
         const registry = dag.address(`tcp://127.0.0.1:${fixture.server.port}`).service();
         const reference = `localhost:${fixture.server.port}/qualification:reset`;
@@ -73,10 +76,11 @@ try {
             assert.equal(bytes!.length, descriptor.size);
           }
         }
-        const failed = fixture.events.find((event) => event.status === 500);
+        const failed = fixture.events.find((event) => event.status === (failure === "range" ? 500 : 404));
         assert.ok(failed);
-        assert.ok(fixture.events.some((event) => event.status === 416 && event.session === failed.session));
-        const rejected = fixture.events.findIndex((event) => event.status === 416);
+        const terminalStatus = failure === "range" ? 416 : 404;
+        assert.ok(fixture.events.some((event) => event.status === terminalStatus && event.session === failed.session));
+        const rejected = fixture.events.findIndex((event) => event.status === terminalStatus);
         if (recover) {
           const fresh = fixture.events.slice(rejected + 1).find((event) => event.method === "POST");
           assert.ok(fresh && fresh.session !== failed.session);
@@ -85,7 +89,8 @@ try {
           assert.ok(!fixture.events.slice(rejected + 1).some((event) => event.method === "POST"));
         }
         console.log(JSON.stringify({
-          result: recover ? "GREEN: fresh upload session, exact manifest/config/compressed layers/platform/annotations" : "RED: old policy stops after 500 -> same-session 416",
+          result: recover ? "GREEN: fresh upload session, exact manifest/config/compressed layers/platform/annotations" : "RED: no fresh upload recovery policy",
+          failure,
           calls,
           digest: digest(expectedManifest),
           events: fixture.events,
