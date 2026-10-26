@@ -139,7 +139,10 @@ application-specific validation policy.
 `retry-count` is the number of retries after the initial attempt and defaults
 to `3`. Authentication and malformed-reference errors fail immediately;
 timeouts, connection resets, HTTP/2 stream failures, `429` and `5xx` responses
-are retried.
+are retried. Tag listing also retries `404` responses within this budget and
+allows one fresh request after a scoped token endpoint returns `401`. A second
+`401` fails; `retry-count=0` disables both retries. Optional tag listing returns
+an empty list only after a missing-repository error exhausts the budget.
 
 ```bash
 # Validate manifest/config integrity and remote layer existence.

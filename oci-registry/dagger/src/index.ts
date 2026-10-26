@@ -249,6 +249,7 @@ export class OciRegistry {
     operation: (attempt: number) => Promise<T>,
     retryNotFound = false,
     retryWhen?: (error: unknown) => boolean,
+    retryTokenAuthenticationOnce = false,
   ): Promise<T> {
     return retryRegistryOperation(
       description,
@@ -259,7 +260,7 @@ export class OciRegistry {
         maxDelayMs: this.maxDelayMs,
       },
       retryNotFound,
-      { retryWhen },
+      { retryWhen, retryTokenAuthenticationOnce },
     );
   }
 
@@ -441,6 +442,9 @@ export class OciRegistry {
         (await this.crane(registryAuth, attempt))
           .withExec(["crane", "ls", parsed.reference])
           .stdout(),
+      true,
+      undefined,
+      true,
     );
     return raw.split(/\s+/).filter(Boolean);
   }

@@ -295,3 +295,99 @@ describe("OCI registry retries", () => {
     expect(isMissingRegistryError(new Error("401 Unauthorized"))).toBeFalse();
   });
 });
+
+
+describe("tag-list scoped token authentication recovery", () => {
+  const retryRegistryTokenAuthentication = <T>(
+    operation: (attempt: number) => Promise<T>,
+    delayMs: number,
+    sleep: (delay: number) => Promise<void>,
+  ) => retryRegistryOperation("list tags", operation, retryPolicy(1, delayMs, delayMs), false, {
+    sleep, random: () => 1, warn: () => {}, retryTokenAuthenticationOnce: true,
+  });
+  const rejection = () => Object.assign(new Error("process exited with code 1"), {
+    stderr: "Error: reading tags for cr.selcloud.ru/onreza-platform/node-identity: GET https://cr.selcloud.ru/auth?scope=repository%3Aonreza-platform%2Fnode-identity%3Apull&service=cr.selcloud.ru: unexpected status code 401 Unauthorized",
+  });
+
+  test("retries a scoped token rejection with a fresh attempt after a delay", async () => {
+    const offsets: number[] = [];
+    const delays: number[] = [];
+    const tags = await retryRegistryTokenAuthentication(async (offset) => {
+      offsets.push(offset);
+      if (offset === 1) throw rejection();
+      return ["retained"];
+    }, 5_000, async (delay) => { delays.push(delay); });
+    expect(tags).toEqual(["retained"]);
+    expect(offsets).toEqual([1, 2]);
+    expect(delays).toEqual([5_000]);
+  });
+
+  test("preserves a persistent token rejection after exactly two requests", async () => {
+    let calls = 0;
+    const error = rejection();
+    await expect(retryRegistryTokenAuthentication(async () => {
+      calls++;
+      throw error;
+    }, 1, async () => {})).rejects.toBe(error);
+    expect(calls).toBe(2);
+  });
+
+  test.each([
+    "GET https://registry.example/v2/team/image/tags/list?n=1000: unexpected status code 401 Unauthorized",
+    "GET https://registry.example/auth?service=registry.example: unexpected status code 401 Unauthorized",
+    "GET https://registry.example/auth?scope=repository%3Ateam%2Fimage%3Apull: unexpected status code 401 Unauthorized",
+    "GET https://registry.example/auth?scope=registry%3Acatalog%3A*&service=registry.example: unexpected status code 401 Unauthorized",
+    "GET https://registry.example/auth?scope=repository%3Ateam%2Fimage%3Apull&service=registry.example: unexpected status code 403 Forbidden",
+    "401 Unauthorized",
+    "404 Not Found",
+  ])("does not retry unrelated or unscoped authentication failure: %s", async (message) => {
+    let calls = 0;
+    const error = new Error(message);
+    await expect(retryRegistryTokenAuthentication(async () => {
+      calls++;
+      throw error;
+    }, 1, async () => {})).rejects.toBe(error);
+    expect(calls).toBe(1);
+  });
+
+  test("does not mask a forbidden operation mixed with a scoped token rejection", async () => {
+    const error = Object.assign(rejection(), { stdout: "403 Forbidden" });
+    let calls = 0;
+    await expect(retryRegistryTokenAuthentication(async () => {
+      calls++;
+      throw error;
+    }, 1, async () => {})).rejects.toBe(error);
+    expect(calls).toBe(1);
+  });
+
+  test.each([
+    "GET https://registry.example/auth?scope=repository%3Ateam%2F404%3Apull&service=registry.example: unexpected status code 401 Unauthorized",
+    "404 Not Found\n403 Forbidden",
+  ])("never classifies authentication failure as an absent repository: %s", (message) => {
+    expect(isMissingRegistryError(new Error(message))).toBeFalse();
+  });
+
+  test("retries missing tag inventories before returning the final missing error", async () => {
+    const calls: number[] = [];
+    const error = new Error("404 Not Found");
+    await expect(retryRegistryOperation("list tags", async (attempt) => {
+      calls.push(attempt);
+      throw error;
+    }, retryPolicy(), true, { sleep: async () => {}, warn: () => {} })).rejects.toBe(error);
+    expect(calls).toEqual([1, 2, 3, 4]);
+    expect(isMissingRegistryError(error)).toBeTrue();
+  });
+});
+
+
+test("token refresh consumes the configured retry budget alongside transient errors", async () => {
+  const calls: number[] = [];
+  await expect(retryRegistryOperation("list tags", async (attempt) => {
+    calls.push(attempt);
+    if (attempt === 3) throw new Error("GET https://registry.example/auth?scope=repository%3Ateam%2Fimage%3Apull&service=registry.example: unexpected status code 401 Unauthorized");
+    throw new Error("503 Service Unavailable");
+  }, retryPolicy(), false, {
+    sleep: async () => {}, warn: () => {}, retryTokenAuthenticationOnce: true,
+  })).rejects.toThrow("503 Service Unavailable");
+  expect(calls).toEqual([1, 2, 3, 4]);
+});

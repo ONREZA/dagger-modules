@@ -46,6 +46,7 @@ type RetryDependencies = {
   random?: () => number;
   warn?: (message: string) => void;
   retryWhen?: (error: unknown) => boolean;
+  retryTokenAuthenticationOnce?: boolean;
 };
 
 export function retryPolicy(
@@ -80,9 +81,23 @@ export function registryErrorMessage(error: unknown): string {
 }
 
 export function isMissingRegistryError(error: unknown): boolean {
+  if (isTerminalRegistryMessage(registryErrorMessage(error).toLowerCase())) return false;
   return /\b(404|manifest unknown|manifest_unknown|name unknown|name_unknown|not found)\b/i.test(
     registryErrorMessage(error),
   );
+}
+
+function isScopedTokenAuthenticationError(error: unknown): boolean {
+  const message = registryErrorMessage(error);
+  const match = /\bGET (https?:\/\/\S+): unexpected status code 401 Unauthorized\b/i.exec(message);
+  if (!match || /\b403\s+Forbidden\b/i.test(message)) return false;
+  try {
+    const request = new URL(match[1]!);
+    return request.searchParams.get("scope")?.startsWith("repository:") === true
+      && Boolean(request.searchParams.get("service"));
+  } catch {
+    return false;
+  }
 }
 
 function hasRetryableHttpStatus(message: string): boolean {
@@ -137,18 +152,25 @@ export async function retryRegistryOperation<T>(
   const random = dependencies.random ?? Math.random;
   const warn = dependencies.warn ?? console.warn;
   const attempts = policy.retryCount + 1;
+  let tokenAuthenticationRetried = false;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       return await operation(attempt);
     } catch (error) {
+      const retryTokenAuthentication: boolean = dependencies.retryTokenAuthenticationOnce === true
+        && !tokenAuthenticationRetried
+        && isScopedTokenAuthenticationError(error);
       if (
         attempt >= attempts
-        || isTerminalRegistryMessage(registryErrorMessage(error).toLowerCase())
-        || (!isRetryableRegistryError(error, retryNotFound) && !dependencies.retryWhen?.(error))
+        || (!retryTokenAuthentication && (
+          isTerminalRegistryMessage(registryErrorMessage(error).toLowerCase())
+          || (!isRetryableRegistryError(error, retryNotFound) && !dependencies.retryWhen?.(error))
+        ))
       ) {
         throw error;
       }
+      tokenAuthenticationRetried ||= retryTokenAuthentication;
 
       const exponentialDelay = Math.min(
         policy.maxDelayMs,
