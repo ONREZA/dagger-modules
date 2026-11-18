@@ -45,7 +45,6 @@ export function parseReference(
   const registry = normalizeRegistry(reference.slice(0, firstSlash));
   const pathAndReference = reference.slice(firstSlash + 1);
   const at = pathAndReference.lastIndexOf("@");
-  const colon = pathAndReference.lastIndexOf(":");
   let repository = pathAndReference;
   let tag: string | undefined;
   let digest: string | undefined;
@@ -56,9 +55,11 @@ export function parseReference(
     if (!DIGEST.test(digest)) {
       throw new Error(`OCI reference ${JSON.stringify(value)} has an invalid digest`);
     }
-  } else if (colon > pathAndReference.lastIndexOf("/")) {
-    repository = pathAndReference.slice(0, colon);
-    tag = pathAndReference.slice(colon + 1);
+  }
+  const colon = repository.lastIndexOf(":");
+  if (colon > repository.lastIndexOf("/")) {
+    tag = repository.slice(colon + 1);
+    repository = repository.slice(0, colon);
     if (!TAG.test(tag)) {
       throw new Error(`OCI reference ${JSON.stringify(value)} has an invalid tag`);
     }
@@ -77,7 +78,8 @@ export function parseReference(
     throw new Error(`OCI repository ${JSON.stringify(value)} must not include a tag or digest`);
   }
 
-  return { reference, registry, repository, tag, digest };
+  const normalized = digest === undefined ? reference : `${registry}/${repository}@${digest}`;
+  return { reference: normalized, registry, repository, tag, digest };
 }
 
 export function canonicalReference(reference: string, digest: string): string {
@@ -90,8 +92,8 @@ export function canonicalReference(reference: string, digest: string): string {
 
 export function assertPushReference(value: string): ParsedReference {
   const parsed = parseReference(value);
-  if (parsed.tag === undefined) {
-    throw new Error(`push destination ${JSON.stringify(value)} must use a tag`);
+  if (parsed.tag === undefined || parsed.digest !== undefined) {
+    throw new Error(`push destination ${JSON.stringify(value)} must use a tag without a digest`);
   }
   return parsed;
 }
